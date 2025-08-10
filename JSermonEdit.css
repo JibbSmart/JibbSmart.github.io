@@ -1,0 +1,123 @@
+body {
+	background-color: #d4ebff;
+	margin: 0;
+}
+
+#userDoc {
+	background-color: #ffffff;
+	max-width: 767px;
+	border-radius: 4px;
+	margin: 10px auto;
+	padding-left: 10px;
+	padding-right: 10px;
+	padding-top: 5px;
+	padding-bottom: 100px;
+}
+
+#userDoc > * {
+	padding-left: 5px;
+	transition: opacity 0.25s, padding-left 0.25s;
+	border-left-style: solid;
+	border-left-width: thick;
+	border-left-color: transparent;
+}
+
+#userDoc > .hidden {
+	text-decoration: line-through;
+	opacity: 0.5;
+	font-weight: normal;
+}
+
+#userDoc > .focusedParent {
+	padding-left: 50%;
+}
+
+#userDoc > .userListItem {
+	margin-top: 0px;
+	margin-bottom: 0px;
+	display: list-item;
+	#list-style-position: inside;
+}
+
+#userDoc > :is(h1, h2, h3, h4, h5, h6)::after {
+	content: "   " attr(data-word-display);
+	opacity: 0.5;
+	font-weight: normal;
+}
+
+#userDoc > p {
+	margin-bottom: 0px;
+}
+
+#userDoc > .userListItem::marker {
+	content: "•  ";
+}
+
+#userDoc > .evenListLevel::marker {
+	content: "⁃  ";
+}
+
+#userDoc > [data-level="101"] {
+	margin-left: 30px;
+}
+
+#userDoc > [data-level="102"] {
+	margin-left: 50px;
+}
+
+#userDoc > [data-level="103"] {
+	margin-left: 70px;
+}
+
+#userDoc > [data-level="104"] {
+	margin-left: 90px;
+}
+
+#userDoc > [data-level="105"] {
+	margin-left: 110px;
+}
+
+#userDoc > [data-level="106"] {
+	margin-left: 130px;
+}
+
+#userDoc > [data-level="107"] {
+	margin-left: 150px;
+}
+
+#userDoc > [data-level="108"] {
+	margin-left: 170px;
+}
+
+#userDoc > .activeSection {
+	border-left-style: solid;
+	border-left-width: thick;
+	border-left-color: #CCCCCC;
+}
+
+#userDoc > .activeParagraph {
+	border-left-style: solid;
+	border-left-width: thick;
+	border-left-color: #33AAEE;
+}
+
+#userDoc > .aboveFocusedParent {
+	display: none;
+}
+
+#userDoc > .belowFocusedParent {
+	display: none;
+}
+
+#userDoc > .hiddenParent {
+	display: none;
+}
+
+/* Adapt to smaller screens */
+@media only screen and (max-width: 787px) {
+    #userDoc {
+	height: 100%;
+	margin: 0;
+        border-radius: 0;
+    }
+}
