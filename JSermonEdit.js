@@ -60,6 +60,430 @@ const orderableSet = new Set([
 	"P"
 ]);
 
+let showingLevel = maxShowingLevel;
+
+const currentSelection = {};
+currentSelection.selectionObject = document.getSelection();
+currentSelection.startNode = currentSelection.selectionObject.anchorNode;
+currentSelection.startElement = currentSelection.startNode;
+currentSelection.startOffset = 0;
+currentSelection.endNode = currentSelection.selectionObject.focusNode;
+currentSelection.endElement = currentSelection.startNode;
+currentSelection.endOffset = 0;
+currentSelection.focusBeforeAnchor = false;
+
+function copyCurrentSelection() {
+	const newSelection = {};
+	newSelection.startNode = currentSelection.startNode;
+	newSelection.startElement = currentSelection.startElement;
+	newSelection.startOffset = currentSelection.startOffset;
+	newSelection.endNode = currentSelection.endNode;
+	newSelection.endElement = currentSelection.endElement;
+	newSelection.endOffset = currentSelection.endOffset;
+	return newSelection;
+}
+
+function setCurrentSelection(otherSelection) {
+	currentSelection.startNode = otherSelection.startNode;
+	currentSelection.startElement = otherSelection.startElement;
+	currentSelection.startOffset = otherSelection.startOffset;
+	currentSelection.endNode = otherSelection.endNode;
+	currentSelection.endElement = otherSelection.endElement;
+	currentSelection.endOffset = otherSelection.endOffset;
+}
+
+function isSelection() {
+	return currentSelection.selectionObject.type === "Range";
+}
+
+function isSingleElementSelection() {
+	return currentSelection.startElement === currentSelection.endElement;
+}
+
+function updateSelection() {
+	const selectionObject = document.getSelection();
+	currentSelection.selectionObject = selectionObject;
+	if (currentSelection) {
+		let focusBeforeAnchor = false;
+		if (selectionObject.anchorNode === selectionObject.focusNode && selectionObject.focusOffset < selectionObject.anchorOffset) {
+			focusBeforeAnchor = true;
+		} else if (selectionObject.anchorNode && (selectionObject.anchorNode.compareDocumentPosition(selectionObject.focusNode) & Node.DOCUMENT_POSITION_PRECEDING)) {
+			focusBeforeAnchor = true;
+		}
+		currentSelection.focusBeforeAnchor = focusBeforeAnchor;
+		currentSelection.startNode = focusBeforeAnchor ? selectionObject.focusNode : selectionObject.anchorNode;
+		currentSelection.startElement = getOrderableParent(currentSelection.startNode);
+		currentSelection.startOffset = focusBeforeAnchor ? selectionObject.focusOffset : selectionObject.anchorOffset;
+		currentSelection.endNode = focusBeforeAnchor ? selectionObject.anchorNode : selectionObject.focusNode;
+		currentSelection.endElement = getOrderableParent(currentSelection.endNode);
+		currentSelection.endOffset = focusBeforeAnchor ? selectionObject.anchorOffset : selectionObject.focusOffset;
+	} else {
+		currentSelection.startNode = null;
+		currentSelection.startElement = null;
+		currentSelection.endNode = null;
+		currentSelection.endElement = null;
+		currentSelection.startOffset = 0;
+		currentSelection.endOffset = 0;
+		currentSelection.focusBeforeAnchor = false;
+	}
+	return currentSelection.startElement;
+}
+
+function restoreSelection() {
+	if (currentSelection.startNode && currentSelection.startNode.isConnected && currentSelection.endNode && currentSelection.endNode.isConnected) {
+		const newRange = document.createRange();
+		newRange.setStart(currentSelection.startNode, currentSelection.startOffset);
+		newRange.setEnd(currentSelection.endNode, currentSelection.endOffset);
+		const newSelection = document.getSelection();
+		newSelection.removeAllRanges();
+		newSelection.addRange(newRange);
+		return true;
+	}
+	return false;
+}
+
+const undoStack = new Array();
+const redoStack = new Array();
+const historyTypeComplete = 1;
+const historyTypePartial = 2;
+
+const inputEventNoCategory = 0;
+const inputEventText = 1;
+const inputEventBackspace = 2;
+const inputEventDel = 3;
+const inputEventRemove = 4;
+const inputEventMove = 5;
+const inputEventPromote = 6;
+const inputEventHide = 7;
+const inputEventPaste = 8;
+const inputEventUndoRedo = 9;
+const inputEventToggleAltA = 10;
+const inputEventToggleAltB = 10;
+
+let currentInputType = inputEventNoCategory;
+let ignoreSelectionChanges = false;
+
+function getCompleteStateForUndoRedo() {
+	let currentNode;
+	let selectionStartIndex = -1;
+	let selectionEndIndex = -1;
+	let selectionStartOffset = getOffsetInParentNode(currentSelection.startElement, currentSelection.startNode, currentSelection.startOffset);
+	let selectionEndOffset = getOffsetInParentNode(currentSelection.endElement, currentSelection.endNode, currentSelection.endOffset);
+	let index = 0;
+	const copiedNodes = Array();
+	for (currentNode of allUserElements()) {
+		if (currentSelection.startElement === currentNode) {
+			selectionStartIndex = index;
+			selectionEndIndex = index;
+		} else if (currentSelection.endElement === currentNode) {
+			if (selectionStartIndex < 0) {
+				selectionStartIndex = index;
+			}
+			selectionEndIndex = index;
+		}
+		copiedNodes.push(currentNode.cloneNode(true));
+		index++;
+	}
+
+	return {
+		historyType: historyTypeComplete,
+		nodes: copiedNodes,
+		selectionStartIndex: selectionStartIndex,
+		selectionStartOffset: selectionStartOffset,
+		selectionEndIndex: selectionEndIndex,
+		selectionEndOffset: selectionEndOffset
+	};
+}
+
+function getOffsetInParentNode(inParent, inTarget, inOffset) {
+	let offsetCounted = 0;
+	let childNode = inParent;
+	while (childNode && childNode != inTarget) {
+		while (childNode.firstChild) {
+			childNode = childNode.firstChild;
+		}
+		if (childNode === inTarget) {
+			offsetCounted += inOffset;
+		} else if (childNode.nodeType === Node.TEXT_NODE) {
+			offsetCounted += childNode.data.length;
+		}
+		while (childNode !== inParent && !childNode.nextSibling) {
+			childNode = childNode.parentNode;
+		}
+		if (childNode === inParent) {
+			return -1;
+		}
+		childNode = childNode.nextSibling;
+	}
+	return offsetCounted;
+}
+
+function findNodeAndOffset(inParent, inOffset) {
+	let offsetCounted = 0;
+	let childNode = inParent;
+	while (childNode && childNode != inTarget) {
+		while (childNode.firstChild) {
+			childNode = childNode.firstChild;
+		}
+		if (childNode.nodeType === Node.TEXT_NODE) {
+			offsetCounted += childNode.data.length;
+			if (offsetCounted >= inOffset) {
+				return {
+					leafNode: childNode,
+					offset: childNode.data.length - (offsetCounted - inOffset)
+				};
+			}
+		}
+		while (childNode !== inParent && !childNode.nextSibling) {
+			childNode = childNode.parentNode;
+		}
+		if (childNode === inParent) {
+			return null;
+		}
+		childNode = childNode.nextSibling;
+	}
+	return null;
+}
+
+function copySelectedContent() {
+	// no selection
+	if (currentSelection.endNode === currentSelection.startNode && currentSelection.endOffset <= currentSelection.startOffset) {
+		return null;
+	}
+
+	// otherwise, array of nodes, split as appropriate
+	let copiedNodes = Array();
+	let targetCopy = null;
+	let result = copiedNodes;
+	let splitFirst = false;
+	if (currentSelection.startOffset !== 0) {
+		// We need to split the first node
+		if (currentSelection.startNode.nodeType === Node.TEXT_NODE) {
+			// Split it!
+			const textData = currentSelection.startNode.data;
+			if (currentSelection.startOffset < textData.length) {
+				// There's more -- what if it's also the last node?
+				if (currentSelection.endNode === currentSelection.startNode && currentSelection.endOffset < textData.length) {
+					const splitStart = document.createTextNode(textData.slice(currentSelection.startOffset, currentSelection.endOffset));
+					copiedNodes.push(splitStart);
+					return copiedNodes;
+				} else {
+					targetCopy = document.createTextNode(textData.slice(currentSelection.startOffset));
+					copiedNodes.push(targetCopy);
+					splitFirst = true;
+				}
+			}
+		}
+	}
+	if (!splitFirst) {
+		targetCopy = currentSelection.startNode.cloneNode(true);
+		copiedNodes.push(targetCopy);
+	}
+
+	// POSSIBILITIES I NEED TO CONSIDER:
+	// end node is deeper than start node (eg: end node is in <strong> element)
+	// start node is deeper than end node (eg: start node is in <strong> element)
+	// BUUUUUUT anything deeper than GetOrderableParent() is a node we want to keep, anyway, because it has formatting info. SO...
+	// whatever we're doing, we want to get to the OrderableParent level.
+	// Like, what if we have something like GetAfterSplit which IS the OrderableParent as if split after startNode and offset...
+	// and we GetBeforeSplit, which IS the OrderableParent as if split before endNode and offset...
+	// No, what if we copy all selected OrderableParents (DEEP), but on the end, shave off using the offset, and on the start, clip using the offset.
+
+	// keep pushing clones until we get to the last node in the selection
+	let targetNode = currentSelection.startNode;
+	while (targetNode && targetNode !== currentSelection.endNode) {
+		while (targetNode.firstChild && targetNode !== currentSelection.endNode) {
+			targetNode = targetNode.firstChild;
+			const shallowCopy = targetNode.cloneNode();
+			targetCopy.appendChild(shallowCopy);
+			targetCopy = shallowCopy;
+		}
+		if (targetNode === currentSelection.endNode) {
+			// might need splitting...
+			break;
+		}
+		while (targetNode !== currentSelection.endNode && !targetNode.nextSibling) {
+			targetNode = targetNode.parentNode;
+			if (targetCopy.parentNode) {
+				targetCopy = targetCopy.parentNode;
+			}
+		}
+		if (targetNode === currentSelection.endNode) {
+			break;
+		}
+		targetNode = targetNode.nextSibling;
+		
+	}
+	return result;
+}
+
+function deleteSelectedContent() {
+	// no selection
+	if (currentSelection.endNode === currentSelection.startNode && currentSelection.endOffset <= currentSelection.startOffset) {
+		return;
+	}
+
+	// otherwise, array of nodes, split as appropriate
+	const nodesToRemove = Array();
+	let splitFirst = false;
+	if (currentSelection.startOffset !== 0) {
+		// We need to split the first node
+		if (currentSelection.startNode.nodeType === Node.TEXT_NODE) {
+			// Split it!
+			const textData = currentSelection.startNode.data;
+			if (currentSelection.startOffset < textData.length) {
+				// There's more -- what if it's also the last node?
+				if (currentSelection.endNode === currentSelection.startNode && currentSelection.endOffset < textData.length) {
+					currentSelection.startNode.data = textData.slice(0, currentSelection.startOffset - 1) + textData.slice(currentSelection.endOffset);
+					return;
+				} else {
+					currentSelection.startNode.data = textData.slice(0, currentSelection.startOffset - 1);
+					splitFirst = true;
+				}
+			}
+		}
+	}
+	if (!splitFirst) {
+		nodesToRemove.push(currentSelection.startNode);
+	}
+	// keep deleting until we get to the last node in the selection
+}
+
+function getContentChangeForUndoRedo() {
+	// Here's what we need to know:
+	// history 
+	// SelectionStartIndex;
+	// SelectionStartOffset;
+	// RemovedData
+	// InsertedData
+	// SelectionEndIndex;
+	// SelectionEndOffset;
+	
+}
+
+function needsCompleteRedo() {
+	if (undoStack.length > 0) {
+		// If there's already an incomplete state here, do nothing
+		const frontState = undoStack[undoStack.length - 1];
+		if (frontState && !frontState.afterState) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function saveStateForUndo() {
+//	if (!needsCompleteRedo()) {
+//		const currentState = getCompleteStateForUndoRedo();
+//		undoStack.push({ beforeState: currentState });
+//		return true;
+//	}
+//	return false;
+}
+
+function saveStateForRedo() {
+//	clearRedo();
+//	const currentState = getCompleteStateForUndoRedo();
+//	const stackSize = undoStack.length;
+//	if (stackSize > 0) {
+//		undoStack[stackSize - 1].afterState = currentState;
+//		return true;
+//	}
+//	return false;
+}
+
+function saveStatesForUndoRedo() {
+	saveStateForUndo();
+	saveStateForRedo();
+}
+
+function setCompleteState(inState) {
+	if (!inState || !inState.nodes || isNaN(inState.selectionStartIndex) || isNaN(inState.selectionEndIndex)) {
+		return false;
+	}
+
+	// remove all children
+	while (userDoc.firstChild) {
+		userDoc.removeChild(userDoc.firstChild);
+	}
+
+	// replace with saved children
+	userDoc.append(...inState.nodes);
+
+	// restore selection
+	if (inState.selectionStartIndex < inState.nodes.length && inState.selectionEndIndex < inState.nodes.length) {
+		currentSelection.startElement = inState.nodes[inState.selectionStartIndex];
+		let foundNodeInfo = findNodeAndOffset(currentSelection.startElement, inState.selectionStartOffset);
+		if (inState.selectionStartOffset >= 0 && foundNodeInfo) {
+			currentSelection.startNode = foundInfo.leafNode;
+			currentSelection.startOffset = foundInfo.offset;
+		} else {
+			currentSelection.startNode = currentSelection.startElement;
+			currentSelection.startOffset = 0;
+		}
+		currentSelection.endElement = inState.nodes[inState.selectionEndIndex];
+		foundNodeInfo = findNodeAndOffset(currentSelection.endElement, inState.selectionEndOffset);
+		if (inState.selectionEndOffset >= 0 && foundNodeInfo) {
+			currentSelection.endNode = foundInfo.leafNode;
+			currentSelection.endOffset = foundInfo.offset;
+		} else {
+			currentSelection.endNode = currentSelection.endElement;
+			currentSelection.endOffset = 0;
+		}
+		restoreSelection();
+	}
+
+	return true;
+}
+
+function doUndo() {
+	if (undoStack.length > 0) {
+		const latestUndo = undoStack[undoStack.length - 1].beforeState;
+		let success = false;
+		if (latestUndo && latestUndo.historyType) {
+			switch (latestUndo.historyType) {
+				case historyTypeComplete:
+					success = setCompleteState(latestUndo);
+					break;
+				default:
+					break;
+			}
+		}
+		if (success) {
+			redoStack.push(latestUndo);
+			undoStack.length = undoStack.length - 1;
+			return true;
+		}
+	}
+	return false;
+}
+
+function doRedo() {
+	if (redoStack.length > 0) {
+		const latestRedo = redoStack[redoStack.length - 1].afterState;
+		let success = false;
+		if (latestRedo && latestRedo.historyType) {
+			switch (latestRedo.historyType) {
+				case historyTypeComplete:
+					success = setCompleteState(latestRedo);
+					break;
+				default:
+					break;
+			}
+		}
+		if (success) {
+			undoStack.push(latestRedo);
+			redoStack.length = redoStack.length - 1;
+			return true;
+		}
+	}
+	return false;
+}
+
+function clearRedo() {
+	redoStack.length = 0;
+}
+
 function copyDataFromTo(fromNode, toNode) {
 	let movingData = fromNode.dataset.level;
 	if (movingData) {
@@ -174,38 +598,6 @@ function clearNodeWordCounters(inNode) {
 	delete inNode.dataset.wordDisplay;
 }
 
-let showingLevel = maxShowingLevel;
-
-const currentSelection = {};
-currentSelection.selectionObject = document.getSelection();
-currentSelection.startNode = currentSelection.selectionObject.anchorNode;
-currentSelection.startElement = currentSelection.startNode;
-currentSelection.startOffset = 0;
-currentSelection.endNode = currentSelection.selectionObject.focusNode;
-currentSelection.endElement = currentSelection.startNode;
-currentSelection.endOffset = 0;
-currentSelection.focusBeforeAnchor = false;
-
-function copyCurrentSelection() {
-	const newSelection = {};
-	newSelection.startNode = currentSelection.startNode;
-	newSelection.startElement = currentSelection.startElement;
-	newSelection.startOffset = currentSelection.startOffset;
-	newSelection.endNode = currentSelection.endNode;
-	newSelection.endElement = currentSelection.endElement;
-	newSelection.endOffset = currentSelection.endOffset;
-	return newSelection;
-}
-
-function setCurrentSelection(otherSelection) {
-	currentSelection.startNode = otherSelection.startNode;
-	currentSelection.startElement = otherSelection.startElement;
-	currentSelection.startOffset = otherSelection.startOffset;
-	currentSelection.endNode = otherSelection.endNode;
-	currentSelection.endElement = otherSelection.endElement;
-	currentSelection.endOffset = otherSelection.endOffset;
-}
-
 let arrowLeftPressed = false;
 let arrowUpPressed = false;
 let arrowRightPressed = false;
@@ -234,56 +626,6 @@ function getOrderableParent(element) {
 		checkingNode = checkingNode.parentNode;
 	}
 	return null;
-}
-
-function isSelection() {
-	return currentSelection.selectionObject.type === "Range";
-}
-
-function isSingleElementSelection() {
-	return currentSelection.startElement === currentSelection.endElement;
-}
-
-function updateSelection() {
-	const selectionObject = document.getSelection();
-	currentSelection.selectionObject = selectionObject;
-	if (currentSelection) {
-		let focusBeforeAnchor = false;
-		if (selectionObject.anchorNode === selectionObject.focusNode && selectionObject.focusOffset < selectionObject.anchorOffset) {
-			focusBeforeAnchor = true;
-		} else if (selectionObject.anchorNode && (selectionObject.anchorNode.compareDocumentPosition(selectionObject.focusNode) & Node.DOCUMENT_POSITION_PRECEDING)) {
-			focusBeforeAnchor = true;
-		}
-		currentSelection.focusBeforeAnchor = focusBeforeAnchor;
-		currentSelection.startNode = focusBeforeAnchor ? selectionObject.focusNode : selectionObject.anchorNode;
-		currentSelection.startElement = getOrderableParent(currentSelection.startNode);
-		currentSelection.startOffset = focusBeforeAnchor ? selectionObject.focusOffset : selectionObject.anchorOffset;
-		currentSelection.endNode = focusBeforeAnchor ? selectionObject.anchorNode : selectionObject.focusNode;
-		currentSelection.endElement = getOrderableParent(currentSelection.endNode);
-		currentSelection.endOffset = focusBeforeAnchor ? selectionObject.anchorOffset : selectionObject.focusOffset;
-	} else {
-		currentSelection.startNode = null;
-		currentSelection.startElement = null;
-		currentSelection.endNode = null;
-		currentSelection.endElement = null;
-		currentSelection.startOffset = 0;
-		currentSelection.endOffset = 0;
-		currentSelection.focusBeforeAnchor = false;
-	}
-	return currentSelection.startElement;
-}
-
-function restoreSelection() {
-	if (currentSelection.startNode && currentSelection.startNode.isConnected && currentSelection.endNode && currentSelection.endNode.isConnected) {
-		const newRange = document.createRange();
-		newRange.setStart(currentSelection.startNode, currentSelection.startOffset);
-		newRange.setEnd(currentSelection.endNode, currentSelection.endOffset);
-		const newSelection = document.getSelection();
-		newSelection.removeAllRanges();
-		newSelection.addRange(newRange);
-		return true;
-	}
-	return false;
 }
 
 // Usage: for (let inNode of allUserElements())
@@ -899,6 +1241,21 @@ function demoteSelectedNodes() {
 }
 
 // assumes updateSelection() valid before calling
+function CanDoTab() {
+	if (isSelection()) { // selection => demote
+		return true;
+	} else if (currentSelection.startElement && currentSelection.startElement.classList) {
+		if (currentSelection.startOffset === 0) { // single element, but we're at the beginning => demote
+			const currentNodeLevel = getOrCalculateNodeLevel(currentSelection.startElement);
+			if (currentNodeLevel && currentNodeLevel >= pLevel) {
+				return true;
+			}
+		}
+		// TODO: else, make columns / tables
+	}
+	return false;
+}
+
 function DoTab() {
 	if (isSelection()) { // selection => demote
 		recountHandled = true;
@@ -908,7 +1265,7 @@ function DoTab() {
 	} else if (currentSelection.startElement && currentSelection.startElement.classList) {
 		if (currentSelection.startOffset === 0) { // single element, but we're at the beginning => demote
 			const currentNodeLevel = getOrCalculateNodeLevel(currentSelection.startElement);
-			if (currentNodeLevel && currentNodeLevel >= pLevel) {
+			if (currentNodeLevel >= pLevel) {
 				// indenting at the beginning? that's list-making
 				setListLevel(currentSelection.startElement, currentNodeLevel - pLevel + 1);
 				return true;
@@ -917,6 +1274,24 @@ function DoTab() {
 		// TODO: else, make columns / tables
 	}
 	return false;
+}
+
+function DoToggleAltA(targetNode) {
+	if (targetNode && targetNode.classList) {
+		const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
+		if (currentNodeLevel >= pLevel) { // Currently only have AltA configured for non-headings
+			targetNode.classList.toggle("altA");
+		}
+	}
+}
+
+function DoToggleAltB(targetNode) {
+	if (targetNode && targetNode.classList) {
+		const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
+		if (currentNodeLevel >= pLevel) { // Currently only have AltB configured for non-headings
+			targetNode.classList.toggle("altB");
+		}
+	}
 }
 
 let isPasting = false;
@@ -1291,6 +1666,16 @@ function moveDownSection() {
 }
 
 function inputOverrides(event) {
+	let newInputType = inputEventNoCategory;
+
+	// A single Unicode character means it's a typed text input:
+	if (event.key.codePointAt(0)) {
+		newInputType = inputEventText;
+	}
+	let savedRedo = false;
+
+	//saveStateForUndo();
+
 	let isArrowLeftEvent = false;
 	let isArrowUpEvent = false;
 	let isArrowRightEvent = false;
@@ -1335,14 +1720,20 @@ function inputOverrides(event) {
 	if (event.altKey) {
 		if (event.shiftKey) {
 			// Navigate shortcuts
-			if (arrowUpPressed) {
+			if (arrowUpPressed) { // Move Section Up
 				event.preventDefault();
 				if (isSingleElementSelection()) {
+					newInputType = inputEventMove;
+					saveStatesForUndoRedo();
+					savedRedo = true;
 					moveUpSection();
 				}
-			} else if (arrowDownPressed) {
+			} else if (arrowDownPressed) { // Move Section Down
 				event.preventDefault();
 				if (isSingleElementSelection()) {
+					newInputType = inputEventMove;
+					saveStatesForUndoRedo();
+					savedRedo = true;
 					moveDownSection();
 				}
 			} else if (arrowLeftPressed) {
@@ -1353,23 +1744,45 @@ function inputOverrides(event) {
 				//if (decreaseShowingLevel()) {
 				//	
 				//}
+			} else if (event.key === "Enter") { // Toggle Alternative Style B
+				event.preventDefault();
+				newInputType = inputEventToggleAltB;
+				saveStatesForUndoRedo();
+				savedRedo = true;
+				updateSelection();
+				let targetNode;
+				for (targetNode of selectedVisibleElements()) {
+					DoToggleAltB(targetNode);
+				}
 			}
 		} else {
 			// Move shortcuts
-			if (arrowUpPressed) {
+			if (arrowUpPressed) { // Move Up
 				event.preventDefault();
+				newInputType = inputEventMove;
+				saveStatesForUndoRedo();
+				savedRedo = true;
 				moveUpSimple();
-			} else if (arrowDownPressed) {
+			} else if (arrowDownPressed) { // Move Down
 				event.preventDefault();
+				newInputType = inputEventMove;
+				saveStatesForUndoRedo();
+				savedRedo = true;
 				moveDownSimple();
 			} else if (arrowLeftPressed) { // Promote/Adjust
 				event.preventDefault();
+				newInputType = inputEventPromote;
+				saveStatesForUndoRedo();
+				savedRedo = true;
 				recountHandled = true;
 				updateSelection();
 				promoteSelectedNodes();
 				countChildWords();
 			} else if (arrowRightPressed) { // Demote/Adjust
 				event.preventDefault();
+				newInputType = inputEventPromote;
+				saveStatesForUndoRedo();
+				savedRedo = true;
 				recountHandled = true;
 				updateSelection();
 				demoteSelectedNodes();
@@ -1377,6 +1790,9 @@ function inputOverrides(event) {
 			} else if (event.key === "h") { // Hide/Unhide
 				// work from end to beginning of selection, toggling hidden status
 				event.preventDefault();
+				newInputType = inputEventHide;
+				saveStatesForUndoRedo();
+				savedRedo = true;
 				recountHandled = true;
 				updateSelection();
 				if (currentSelection.startElement && currentSelection.endElement) {
@@ -1389,8 +1805,11 @@ function inputOverrides(event) {
 						countChildWords();
 					}
 				}
-			} else if (event.key === "Backspace") {
+			} else if (event.key === "Backspace") { // Remove
 				event.preventDefault();
+				newInputType = inputEventRemove;
+				saveStatesForUndoRedo();
+				savedRedo = true;
 				updateSelection();
 				expandSelectionToIncludeHiddenChildren();
 				let targetNode;
@@ -1402,25 +1821,59 @@ function inputOverrides(event) {
 				// Fix that and then this will probably work automatically due to selection change.
 				//updateSelection();
 				//addParagraphHighlights();
+			} else if (event.key === "Enter") { // Toggle Alternative Style A
+				event.preventDefault();
+				newInputType = inputEventToggleAltA;
+				saveStatesForUndoRedo();
+				savedRedo = true;
+				updateSelection();
+				let targetNode;
+				for (targetNode of selectedVisibleElements()) {
+					DoToggleAltA(targetNode);
+				}
 			}
-
 		}
 	} else if (event.ctrlKey) {
-		if (event.key === "z") { // Undo (TODO)
-			event.preventDefault();
+		if (event.key === "z") {
+			if (event.shiftKey) { // Redo
+				event.preventDefault();
+				newInputType = inputEventUndoRedo;
+		//		savedRedo = true;
+		//		ignoreSelectionChanges = true;
+		//		doRedo();
+		//		ignoreSelectionChanges = false;
+			} else { // Undo
+				event.preventDefault();
+				newInputType = inputEventUndoRedo;
+		//		if (redoStack.length === 0) {
+		//			saveStatesForUndoRedo();
+		//		}
+		//		savedRedo = true;
+		//		ignoreSelectionChanges = true;
+		//		doUndo();
+		//		ignoreSelectionChanges = false;
+			}
 		}
 	} else {
 		if (event.key === "Tab") {
 			updateSelection();
-			if (DoTab()) {
+			if (CanDoTab()) {
 				event.preventDefault();
+				newInputType = inputEventPromote;
+				savedRedo = true;
+				saveStatesForUndoRedo();
+				DoTab();
 			}
 		} else if (event.key === " ") { // space at beginning does "tab"
 			updateSelection();
 			if (!isSelection() && currentSelection.endNode) {
 				if (currentSelection.startOffset === 0) {
-					if (DoTab()) {
+					if (CanDoTab()) {
 						event.preventDefault();
+						newInputType = inputEventPromote;
+						saveStatesForUndoRedo();
+						savedRedo = true;
+						DoTab();
 					}
 				}
 			}
@@ -1430,6 +1883,9 @@ function inputOverrides(event) {
 				const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
 				if (currentNodeLevel && currentNodeLevel > pLevel) {
 					event.preventDefault();
+					newInputType = inputEventPromote;
+					saveStatesForUndoRedo();
+					savedRedo = true;
 					// promote by one
 					setListLevel(targetNode, currentNodeLevel - pLevel - 1);
 					return;
@@ -1441,9 +1897,12 @@ function inputOverrides(event) {
 				if (currentSelection.startOffset === 0) {
 					const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
 					if (currentNodeLevel && currentNodeLevel > pLevel) {
+						event.preventDefault();
+						newInputType = inputEventPromote;
+						saveStatesForUndoRedo();
+						savedRedo = true;
 						// promote all the way
 						setListLevel(targetNode, 0);
-						event.preventDefault();
 						return;
 					}
 				}
@@ -1452,6 +1911,9 @@ function inputOverrides(event) {
 					if (!isSelection() && currentSelection.endOffset === currentSelection.endNode.textContent.length) {
 						needsToClear = false;
 						event.preventDefault();
+						newInputType = inputEventText;
+						saveStatesForUndoRedo();
+						savedRedo = true;
 						//if (currentSelection.type === "Range") {
 						//	currentSelection.deleteFromDocument();
 						//	if (currentSelectionStartOffset === 0) {
@@ -1473,13 +1935,41 @@ function inputOverrides(event) {
 						newSelection.removeAllRanges();
 						newSelection.addRange(newRange);
 					} else {
+						newInputType = inputEventText;
 						clearNodeWordCounters(targetNode);
 					}
 				}
 				if (needsToClear) {
 					// wait, watch-out -- this node might get split! clear counters!
+					newInputType = inputEventText;
 					clearNodeWordCounters(targetNode);
 				}
+			}
+		}
+	}
+
+	// Check for change and decide whether to save Redo state
+	if (!savedRedo) {
+		if (currentInputType !== newInputType) {
+			currentInputType = newInputType;
+			saveStatesForUndoRedo();
+		} else {
+			switch (currentInputType) {
+				case inputEventText:
+					if (event.key === " ") {
+						saveStatesForUndoRedo();
+					} else if (event.key === "Enter") {
+						saveStatesForUndoRedo();
+					} else {
+						// Otherwise, only save undo state (if it's needed)
+						saveStateForUndo();
+					}
+					break;
+				case inputEventNoCategory:
+					saveStatesForUndoRedo();
+					break;
+				default:
+					break;
 			}
 		}
 	}
@@ -1551,6 +2041,10 @@ function selectionChange(event) {
 	//	- detecting meaningful changes
 	// 	- sanitising pasted content
 	//	- updating undo/redo stack
+
+	if (ignoreSelectionChanges) {
+		return;
+	}
 
 	if (isPasting) {
 		isPasting = false;

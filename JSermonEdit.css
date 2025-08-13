@@ -12,105 +12,246 @@ body {
 	padding-right: 10px;
 	padding-top: 5px;
 	padding-bottom: 100px;
+	counter-reset: list_1 list_2 list_3 list_4 list_5 list_6 list_7 list_8;
 }
 
-#userDoc > * {
+#userDoc * {
+	text-align: start;
 	padding-left: 5px;
-	transition: opacity 0.25s, padding-left 0.25s;
+	padding-right: 8px;
+	/*transition: opacity 0.25s, padding-left 0.25s;*/
 	border-left-style: solid;
 	border-left-width: thick;
 	border-left-color: transparent;
 }
 
-#userDoc > .hidden {
-	text-decoration: line-through;
-	opacity: 0.5;
-	font-weight: normal;
-}
-
-#userDoc > .focusedParent {
+#userDoc .focusedParent {
 	padding-left: 50%;
 }
 
-#userDoc > .userListItem {
-	margin-top: 0px;
-	margin-bottom: 0px;
-	display: list-item;
-	#list-style-position: inside;
+#userDoc :is(h1, h2, h3, h4, h5, h6) {
+	counter-set: list_1 0 list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
-#userDoc > :is(h1, h2, h3, h4, h5, h6)::after {
+#userDoc :is(h1, h2, h3, h4, h5, h6)::after {
 	content: "   " attr(data-word-display);
 	opacity: 0.5;
 	font-weight: normal;
 }
 
-#userDoc > p {
+#userDoc p {
 	margin-bottom: 0px;
+	counter-set: list_1 0 list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
-#userDoc > .userListItem::marker {
+#userDoc p.altA:not(.userListItem) {
+	font-size: 1.25rem;
+	padding-left: 50px;
+	padding-right: 53px;
+}
+
+#userDoc p.altB:not(.userListItem) {
+	text-align: center;
+}
+
+#userDoc .userListItem {
+	margin-top: 0px;
+	margin-bottom: 0px;
+	display: list-item;
+	/*list-style-position: inside;*/
+	text-align: start;
+}
+
+#userDoc .userListItem::marker {
 	content: "•  ";
 }
 
-#userDoc > .evenListLevel::marker {
+#userDoc .evenListLevel::marker {
 	content: "⁃  ";
 }
 
-#userDoc > [data-level="101"] {
+#userDoc .userListItem.altB::marker {
+	content: "✔  ";
+}
+
+#userDoc .hidden {
+	text-decoration: line-through;
+	opacity: 0.5;
+	font-weight: normal;
+	counter-set: none;
+}
+
+#userDoc [data-level="101"] {
 	margin-left: 30px;
+	counter-set: list_1 0 list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
-#userDoc > [data-level="102"] {
+#userDoc [data-level="102"] {
 	margin-left: 50px;
+	counter-set: list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
-#userDoc > [data-level="103"] {
+#userDoc [data-level="103"] {
 	margin-left: 70px;
+	counter-set: list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
-#userDoc > [data-level="104"] {
+#userDoc [data-level="104"] {
 	margin-left: 90px;
+	counter-set: list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
-#userDoc > [data-level="105"] {
+#userDoc [data-level="105"] {
 	margin-left: 110px;
+	counter-set: list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
-#userDoc > [data-level="106"] {
+#userDoc [data-level="106"] {
 	margin-left: 130px;
+	counter-set: list_6 0 list_7 0 list_8 0;
 }
 
-#userDoc > [data-level="107"] {
+#userDoc [data-level="107"] {
 	margin-left: 150px;
+	counter-set: list_7 0 list_8 0;
 }
 
-#userDoc > [data-level="108"] {
+#userDoc [data-level="108"] {
 	margin-left: 170px;
+	counter-set: list_8 0;
 }
 
-#userDoc > .activeSection {
+#userDoc .altA[data-level="101"] {
+	counter-increment: list_1;
+	counter-set: list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
+}
+
+#userDoc .altA[data-level="102"] {
+	counter-increment: list_2;
+	counter-set: list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
+}
+
+#userDoc .altA[data-level="103"] {
+	counter-increment: list_3;
+	counter-set: list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
+}
+
+#userDoc .altA[data-level="104"] {
+	counter-increment: list_4;
+	counter-set: list_5 0 list_6 0 list_7 0 list_8 0;
+}
+
+#userDoc .altA[data-level="105"] {
+	counter-increment: list_5;
+	counter-set: list_6 0 list_7 0 list_8 0;
+}
+
+#userDoc .altA[data-level="106"] {
+	counter-increment: list_6;
+	counter-set: list_7 0 list_8 0;
+}
+
+#userDoc .altA[data-level="107"] {
+	counter-increment: list_7;
+	counter-set: list_8 0;
+}
+
+#userDoc .altA[data-level="108"] {
+	counter-increment: list_8;
+	counter-set: none;
+}
+
+#userDoc .altA[data-level="101"]::marker {
+	content: counter(list_1, decimal) ". ";
+}
+
+#userDoc .altA[data-level="102"]::marker {
+	content: counter(list_2, decimal) ". ";
+}
+
+#userDoc .altA[data-level="103"]::marker {
+	content: counter(list_3, decimal) ". ";
+}
+
+#userDoc .altA[data-level="104"]::marker {
+	content: counter(list_4, decimal) ". ";
+}
+
+#userDoc .altA[data-level="105"]::marker {
+	content: counter(list_5, decimal) ". ";
+}
+
+#userDoc .altA[data-level="106"]::marker {
+	content: counter(list_6, decimal) ". ";
+}
+
+#userDoc .altA[data-level="107"]::marker {
+	content: counter(list_7, decimal) ". ";
+}
+
+#userDoc .altA[data-level="108"]::marker {
+	content: counter(list_8, decimal) ". ";
+}
+
+#userDoc .altA.altB[data-level="101"]::marker {
+	content: "✔ " counter(list_1, decimal) ". ";
+}
+
+#userDoc .altA.altB[data-level="102"]::marker {
+	content: "✔ " counter(list_2, decimal) ". ";
+}
+
+#userDoc .altA.altB[data-level="103"]::marker {
+	content: "✔ " counter(list_3, decimal) ". ";
+}
+
+#userDoc .altA.altB[data-level="104"]::marker {
+	content: "✔ " counter(list_4, decimal) ". ";
+}
+
+#userDoc .altA.altB[data-level="105"]::marker {
+	content: "✔ " counter(list_5, decimal) ". ";
+}
+
+#userDoc .altA.altB[data-level="106"]::marker {
+	content: "✔ " counter(list_6, decimal) ". ";
+}
+
+#userDoc .altA.altB[data-level="107"]::marker {
+	content: "✔ " counter(list_7, decimal) ". ";
+}
+
+#userDoc .altA.altB[data-level="108"]::marker {
+	content: "✔ " counter(list_8, decimal) ". ";
+}
+
+#userDoc .userListItem.altB {
+	opacity: 0.5;
+}
+
+#userDoc .activeSection {
 	border-left-style: solid;
 	border-left-width: thick;
 	border-left-color: #CCCCCC;
 }
 
-#userDoc > .activeParagraph {
+#userDoc .activeParagraph {
 	border-left-style: solid;
 	border-left-width: thick;
 	border-left-color: #33AAEE;
 }
 
-#userDoc > .aboveFocusedParent {
+#userDoc .aboveFocusedParent {
 	display: none;
 }
 
-#userDoc > .belowFocusedParent {
+#userDoc .belowFocusedParent {
 	display: none;
 }
 
-#userDoc > .hiddenParent {
+#userDoc .hiddenParent {
 	display: none;
+	counter-set: none;
 }
 
 /* Adapt to smaller screens */
