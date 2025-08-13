@@ -204,6 +204,7 @@ function getOffsetInParentNode(inParent, inTarget, inOffset) {
 		}
 		if (childNode === inTarget) {
 			offsetCounted += inOffset;
+			return offsetCounted;
 		} else if (childNode.nodeType === Node.TEXT_NODE) {
 			offsetCounted += childNode.data.length;
 		}
@@ -1058,6 +1059,7 @@ function unnestNodes(startNode) {
 
 function setListLevel(inNode, inLevel) {
 	const sanitizedLevel = Math.min(+inLevel, maxIndentLevel);
+	const previousSanitizedLevel = getOrCalculateNodeLevel(inNode) - pLevel;
 	if (sanitizedLevel && sanitizedLevel > 0) {
 		inNode.classList.add("userListItem");
 		const newLevel = pLevel + sanitizedLevel;
@@ -1067,10 +1069,18 @@ function setListLevel(inNode, inLevel) {
 			inNode.classList.remove("evenListLevel");
 		}
 		setNodeLevel(inNode, newLevel);
+		if (previousSanitizedLevel <= 0) {
+			inNode.classList.remove("altA");
+			inNode.classList.remove("altB");
+		}
 	} else {
 		setNodeLevel(inNode, pLevel);
 		inNode.classList.remove("userListItem");
 		inNode.classList.remove("evenListLevel");
+		if (previousSanitizedLevel > 0) {
+			inNode.classList.remove("altA");
+			inNode.classList.remove("altB");
+		}
 	}
 	return sanitizedLevel;
 }
@@ -1147,10 +1157,8 @@ function sanitizeNodes(startNode, numNodes) {
 	};
 }
 
-function convertNodeByMap(inputMap, targetNode) {
+function convertNodeToType(targetNode, newNodeName) {
 	if (targetNode && targetNode.classList) {
-		const currentNodeName = targetNode.nodeName;
-		const newNodeName = inputMap.get(currentNodeName);
 		if (newNodeName) {
 			const newElement = document.createElement(newNodeName);
 			targetNode.after(newElement);
@@ -1171,6 +1179,18 @@ function convertNodeByMap(inputMap, targetNode) {
 				currentSelection.endNode = newElement.firstChild ? newElement.firstChild : newElement;
 				currentSelection.endElement = newElement;
 			}
+			return true;
+		}
+	}
+	return false;
+}
+
+function convertNodeByMap(inputMap, targetNode) {
+	if (targetNode && targetNode.classList) {
+		const currentNodeName = targetNode.nodeName;
+		const newNodeName = inputMap.get(currentNodeName);
+		if (newNodeName) {
+			convertNodeToType(targetNode, newNodeName);
 			return true;
 		}
 	}
@@ -1881,7 +1901,7 @@ function inputOverrides(event) {
 			const targetNode = updateSelection();
 			if (!isSelection() && targetNode && targetNode.classList && currentSelection.startOffset === 0) {
 				const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
-				if (currentNodeLevel && currentNodeLevel > pLevel) {
+				if (currentNodeLevel > pLevel) {
 					event.preventDefault();
 					newInputType = inputEventPromote;
 					saveStatesForUndoRedo();
@@ -1891,18 +1911,27 @@ function inputOverrides(event) {
 					return;
 				}
 			}
-		} else if (event.key === "Enter") {
+		} else if (event.key === "Enter") { // Lots of special case stuff here
 			const targetNode = updateSelection();
 			if (targetNode && targetNode.classList) {
-				if (currentSelection.startOffset === 0) {
+				// if we have no words or we're before all words, promote to P
+				if (getOrCalculateNodeWordCount(targetNode) === 0 ||
+					getOffsetInParentNode(currentSelection.startElement, currentSelection.startNode, currentSelection.startOffset) === 0) {
 					const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
-					if (currentNodeLevel && currentNodeLevel > pLevel) {
+					if (currentNodeLevel !== pLevel || targetNode.classList.contains("altA") || targetNode.classList.contains("altB")) {
 						event.preventDefault();
 						newInputType = inputEventPromote;
 						saveStatesForUndoRedo();
 						savedRedo = true;
-						// promote all the way
-						setListLevel(targetNode, 0);
+						if (currentNodeLevel === pLevel) { // clear alt modes
+							targetNode.classList.remove("altA");
+							targetNode.classList.remove("altB");
+						} else if (currentNodeLevel > pLevel) { // promote all the way
+							setListLevel(targetNode, 0);
+						} else { // let's also convert headings to paragraphs as appropriate
+							convertNodeToType(targetNode, "P");
+							restoreSelection();
+						}
 						return;
 					}
 				}
