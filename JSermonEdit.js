@@ -27,11 +27,11 @@ const maxIndentLevel = 8;
 const maxShowingLevel = 4;
 
 const nodeNameToLevel = new Map([
-	["H1", 0],
-	["H2", 1],
-	["H3", 2],
-	["H4", 3],
-	["P", pLevel]
+	["H1", 0], ["h1", 0],
+	["H2", 1], ["h2", 1],
+	["H3", 2], ["h3", 2],
+	["H4", 3], ["h4", 3],
+	["P", pLevel], ["p", pLevel]
 ]);
 
 const sanitizeMap = new Map([
@@ -221,12 +221,14 @@ function getOffsetInParentNode(inParent, inTarget, inOffset) {
 
 function findNodeAndOffset(inParent, inOffset) {
 	let offsetCounted = 0;
-	let childNode = inParent;
-	while (childNode && childNode != inTarget) {
+	let childNode = inParent.firstChild;
+	let lastTextNode = null;
+	while (childNode && childNode != inParent) {
 		while (childNode.firstChild) {
 			childNode = childNode.firstChild;
 		}
 		if (childNode.nodeType === Node.TEXT_NODE) {
+			lastTextNode = childNode;
 			offsetCounted += childNode.data.length;
 			if (offsetCounted >= inOffset) {
 				return {
@@ -239,11 +241,15 @@ function findNodeAndOffset(inParent, inOffset) {
 			childNode = childNode.parentNode;
 		}
 		if (childNode === inParent) {
-			return null;
+			break;
 		}
 		childNode = childNode.nextSibling;
 	}
-	return null;
+	// went past end, but still useful to have last text node if there was one:
+	return {
+		leafNode: lastTextNode,
+		offset: lastTextNode ? lastTextNode.data.length : -1
+	};
 }
 
 function copySelectedContent() {
@@ -744,7 +750,7 @@ function* selectedVisibleElements() {
 	while (!isLast && targetNode) {
 		const nextNode = targetNode.nextSibling;
 		isLast = targetNode === currentSelection.endElement || !nextNode;
-		if (targetNode.classList && !targetNode.classList.contains("hiddenParent"))
+		if (targetNode.classList && !targetNode.classList.contains("hiddenParent") && !targetNode.classList.contains("hiddenLevel"))
 		{
 			yield targetNode;
 		}
@@ -759,7 +765,7 @@ function* selectedFullyVisibleElements() {
 	while (!isLast && targetNode) {
 		const nextNode = targetNode.nextSibling;
 		isLast = targetNode === currentSelection.endElement || !nextNode;
-		if (targetNode.classList && !targetNode.classList.contains("hidden") && !targetNode.classList.contains("hiddenParent"))
+		if (targetNode.classList && !targetNode.classList.contains("hidden") && !targetNode.classList.contains("hiddenParent") && !targetNode.classList.contains("hiddenLevel"))
 		{
 			yield targetNode;
 		}
@@ -801,7 +807,7 @@ function* selectedVisibleElementsReversed() {
 	while (!isFirst && targetNode) {
 		const prevNode = targetNode.previousSibling;
 		isFirst = targetNode === currentSelection.startElement || !prevNode;
-		if (targetNode.classList && !targetNode.classList.contains("hiddenParent"))
+		if (targetNode.classList && !targetNode.classList.contains("hiddenParent") && !targetNode.classList.contains("hiddenLevel"))
 		{
 			yield targetNode;
 		}
@@ -816,7 +822,7 @@ function* selectedFullyVisibleElementsReversed() {
 	while (!isFirst && targetNode) {
 		const prevNode = targetNode.previousSibling;
 		isFirst = targetNode === currentSelection.startElement || !prevNode;
-		if (targetNode.classList && !targetNode.classList.contains("hidden") && !targetNode.classList.contains("hiddenParent"))
+		if (targetNode.classList && !targetNode.classList.contains("hidden") && !targetNode.classList.contains("hiddenParent") && !targetNode.classList.contains("hiddenLevel"))
 		{
 			yield targetNode;
 		}
@@ -1160,24 +1166,32 @@ function sanitizeNodes(startNode, numNodes) {
 function convertNodeToType(targetNode, newNodeName) {
 	if (targetNode && targetNode.classList) {
 		if (newNodeName) {
+			// are we allowed to go to this level?
+			const newLevel = nodeNameToLevel.get(newNodeName);
+			if (showingLevel < maxShowingLevel && showingLevel < newLevel) {
+				return false;
+			}
 			const newElement = document.createElement(newNodeName);
 			targetNode.after(newElement);
 			newElement.append(...targetNode.childNodes);
 			copyDataFromTo(targetNode, newElement);
 			targetNode.remove();
-			const newLevel = nodeNameToLevel.get(newElement.nodeName);
 			if (!isNaN(newLevel)) {
 				setNodeLevel(newElement, newLevel);
 			}
-			if (targetNode === currentSelection.startElement && currentSelection.startNode && !currentSelection.startNode.isConnected) {
+			if (targetNode === currentSelection.startElement) {
 				// Fix lost selection
-				currentSelection.startNode = newElement.firstChild ? newElement.firstChild : newElement;
 				currentSelection.startElement = newElement;
+				if (targetNode === currentSelection.startNode) {
+					currentSelection.startNode = newElement;
+				}
 			}
-			if (targetNode === currentSelection.endElement && currentSelection.endNode && !currentSelection.endNode.isConnected) {
+			if (targetNode === currentSelection.endElement) {
 				// Fix lost selection
-				currentSelection.endNode = newElement.firstChild ? newElement.firstChild : newElement;
 				currentSelection.endElement = newElement;
+				if (targetNode === currentSelection.endNode) {
+					currentSelection.endNode = newElement;
+				}
 			}
 			return true;
 		}
@@ -1244,8 +1258,11 @@ function demoteNode(targetNode) {
 		const adjustedLevel = currentTargetLevel - pLevel;
 		if (adjustedLevel >= 0) {
 			let newAdjustedLevel = adjustedLevel + 1;
-			setListLevel(targetNode, newAdjustedLevel);
-			return true;
+			// don't demote into hidden level
+			if (showingLevel >= maxShowingLevel) {
+				setListLevel(targetNode, newAdjustedLevel);
+				return true;
+			}
 		}
 	}
 
@@ -1260,8 +1277,27 @@ function demoteSelectedNodes() {
 	restoreSelection();
 }
 
+function matchContextListType(inNode) {
+	const nodeLevel = getOrCalculateNodeLevel(inNode);
+	if (nodeLevel > pLevel) { // Bullet point needs to adopt what's before it
+		const contextSearch = previousVisibleOrderableSiblingOfLevelOrHigher(inNode, nodeLevel);
+		const contextElement = contextSearch.sibling;
+		if (contextElement) {
+			const contextLevel = getOrCalculateNodeLevel(contextElement);
+			if (contextLevel === nodeLevel) {
+				// Match numbered-ness
+				if (contextElement.classList.contains("altA")) {
+					inNode.classList.add("altA");
+				} else {
+					inNode.classList.remove("altA");
+				}
+			}
+		}
+	}
+}
+
 // assumes updateSelection() valid before calling
-function CanDoTab() {
+function canDoTab() {
 	if (isSelection()) { // selection => demote
 		return true;
 	} else if (currentSelection.startElement && currentSelection.startElement.classList) {
@@ -1276,10 +1312,13 @@ function CanDoTab() {
 	return false;
 }
 
-function DoTab() {
+function doTab() {
 	if (isSelection()) { // selection => demote
 		recountHandled = true;
 		demoteSelectedNodes();
+		if (isSingleElementSelection()) {
+			matchContextListType(currentSelection.startElement);
+		}
 		countChildWords();
 		return true;
 	} else if (currentSelection.startElement && currentSelection.startElement.classList) {
@@ -1288,6 +1327,7 @@ function DoTab() {
 			if (currentNodeLevel >= pLevel) {
 				// indenting at the beginning? that's list-making
 				setListLevel(currentSelection.startElement, currentNodeLevel - pLevel + 1);
+				matchContextListType(currentSelection.startElement);
 				return true;
 			}
 		}
@@ -1296,7 +1336,7 @@ function DoTab() {
 	return false;
 }
 
-function DoToggleAltA(targetNode) {
+function doToggleAltA(targetNode) {
 	if (targetNode && targetNode.classList) {
 		const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
 		if (currentNodeLevel >= pLevel) { // Currently only have AltA configured for non-headings
@@ -1305,7 +1345,7 @@ function DoToggleAltA(targetNode) {
 	}
 }
 
-function DoToggleAltB(targetNode) {
+function doToggleAltB(targetNode) {
 	if (targetNode && targetNode.classList) {
 		const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
 		if (currentNodeLevel >= pLevel) { // Currently only have AltB configured for non-headings
@@ -1347,6 +1387,23 @@ function thisOrLastChild(inNode) {
 	return null;
 }
 
+function thisOrLastChildBelowLevel(inNode, inLevel) {
+	let currentNode = getOrderableParent(inNode);
+	if (currentNode) {
+		let previousNode = currentNode;
+		let targetNode = currentNode;
+		for (targetNode of childElementsOf(inNode)) {
+			const targetLevel = getOrCalculateNodeLevel(targetNode);
+			if (targetLevel <= inLevel) {
+				return previousNode;
+			}
+			previousNode = targetNode;
+		}
+		return targetNode;
+	}
+	return null;
+}
+
 function expandSelectionToIncludeHiddenChildren() {
 	if (currentSelection && currentSelection.endElement) {
 		const endNode = thisOrLastHiddenChild(currentSelection.endElement);
@@ -1361,6 +1418,17 @@ function expandSelectionToIncludeHiddenChildren() {
 function expandSelectionToIncludeLastChildren() {
 	if (currentSelection && currentSelection.endElement) {
 		const endNode = thisOrLastChild(currentSelection.endElement);
+		if (endNode !== currentSelection.endElement) {
+			currentSelection.endElement = endNode;
+			return true;
+		}
+	}
+	return false;
+}
+
+function expandSelectionToIncludeChildrenBelowLevel(inLevel) {
+	if (currentSelection && currentSelection.endElement) {
+		const endNode = thisOrLastChildBelowLevel(currentSelection.endElement, inLevel);
 		if (endNode !== currentSelection.endElement) {
 			currentSelection.endElement = endNode;
 			return true;
@@ -1533,7 +1601,71 @@ function nextVisibleOrderableSibling(inNode) {
 }
 
 function increaseShowingLevel() {
-	return setShowingLevel(Math.max(showingLevel - 1, 0));
+	const isSingle = isSingleElementSelection();
+	const result = setShowingLevel(Math.max(showingLevel - 1, 0));
+	// now we need to change the selection to something shown
+	let newSelectedElement = null;
+	if (currentSelection.startElement && getOrCalculateNodeLevel(currentSelection.startElement) > showingLevel) {
+		clearParagraphHighlights();
+		const previousVisibleSibling = previousVisibleOrderableSiblingOfLevelOrHigher(currentSelection.startElement, showingLevel).sibling;
+		if (previousVisibleSibling) {
+			// select end
+			const endChild = findNodeAndOffset(previousVisibleSibling, Infinity);
+			currentSelection.startElement = previousVisibleSibling;
+			if (endChild.leafNode) {
+				currentSelection.startNode = endChild.leafNode;
+				currentSelection.startOffset = endChild.offset;
+			} else {
+				currentSelection.startNode = currentSelection.startElement;
+				currentSelection.startOffset = 0;
+			}
+		} else { // no previous sibling? we need to go next, then
+			const nextVisibleSibling = nextVisibleOrderableSiblingOfLevelOrHigher(currentSelection.startElement, showingLevel).sibling;
+			if (nextVisibleSibling) {
+				// select beginning
+				const startChild = findNodeAndOffset(nextVisibleSibling, 0);
+				currentSelection.startElement = nextVisibleSibling;
+				if (startChild.leafNode) {
+					currentSelection.startNode = startChild.leafNode;
+					currentSelection.startOffset = startChild.offset;
+				} else {
+					currentSelection.startNode = currentSelection.startElement;
+					currentSelection.startOffset = 0;
+				}
+			}
+		}
+		// what about the end of the selection, though?
+		if (isSingle) {
+			currentSelection.endElement = currentSelection.startElement;
+			currentSelection.endNode = currentSelection.endNode;
+			currentSelection.endOffset = currentSelection.startOffset;
+		} else if (getOrCalculateNodeLevel(currentSelection.endElement) > showingLevel) {
+			const visibleSiblingBeforeEnd = previousVisibleOrderableSiblingOfLevelOrHigher(currentSelection.endElement, showingLevel).sibling;
+			if (!visibleSiblingBeforeEnd) { // full collapse
+				currentSelection.endElement = currentSelection.startElement;
+				currentSelection.endNode = currentSelection.endNode;
+				currentSelection.endOffset = currentSelection.startOffset;
+			} else {
+				// select end
+				const endChild = findNodeAndOffset(visibleSiblingBeforeEnd, Infinity);
+				currentSelection.endElement = visibleSiblingBeforeEnd;
+				if (endChild.leafNode) {
+					currentSelection.endNode = endChild.leafNode;
+					currentSelection.endOffset = endChild.offset;
+				} else {
+					currentSelection.endNode = currentSelection.endElement;
+					currentSelection.endOffset = 0;
+				}
+			}
+		}
+		// we've done all we can. Now:
+		ignoreSelectionChanges = true;
+		restoreSelection();
+		ignoreSelectionChanges = false;
+		addParagraphHighlights();
+	}
+
+	return result;
 }
 
 function decreaseShowingLevel() {
@@ -1550,9 +1682,9 @@ function setShowingLevel(inLevel) {
 	for (currentNode of allUserElements()) {
 		const currentLevel = getOrCalculateNodeLevel(currentNode);
 		if (currentLevel <= newLevelTarget) {
-			currentNode.classList.remove("focusedParent");
+			currentNode.classList.remove("hiddenLevel");
 		} else {
-			currentNode.classList.add("focusedParent");
+			currentNode.classList.add("hiddenLevel");
 		}
 	}
 
@@ -1564,15 +1696,20 @@ function moveUpSimple() {
 	updateSelection();
 	const beforeExpansion = copyCurrentSelection();
 	expandSelectionToIncludeHiddenChildren();
+	const movingSection = showingLevel < maxShowingLevel;
+	if (movingSection) {
+		expandSelectionToIncludeChildrenBelowLevel(showingLevel);
+	}
 	if (currentSelection.startElement) {
-		const previousElement = previousVisibleOrderableSibling(currentSelection.startElement).sibling;
+		const previousElement = movingSection ? previousVisibleOrderableSiblingOfLevelOrHigher(currentSelection.startElement, showingLevel).sibling
+			: previousVisibleOrderableSibling(currentSelection.startElement).sibling;
 		if (previousElement) {
 			previousElement.before(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
 			restoreSelection();
 			return true;
-		} else if (currentSelection.startElement !== userDoc.firstChild) {
+		} else if (currentSelection.startElement !== userDoc.firstChild && !movingSection) {
 			// insert at beginning
 			userDoc.prepend(...selectedNodes());
 			countChildWords();
@@ -1593,23 +1730,60 @@ function moveDownSimple() {
 	updateSelection();
 	const beforeExpansion = copyCurrentSelection();
 	expandSelectionToIncludeHiddenChildren();
+	const movingSection = showingLevel < maxShowingLevel;
+	if (movingSection) {
+		expandSelectionToIncludeChildrenBelowLevel(showingLevel);
+	}
 	if (currentSelection.endElement) {
-		const nextElement = thisOrLastHiddenChild(nextVisibleOrderableSibling(currentSelection.endElement).sibling);
-		if (nextElement) {
-			nextElement.after(...selectedNodes());
-			countChildWords();
-			setCurrentSelection(beforeExpansion);
-			restoreSelection();
-			return true;
-		} else if (currentSelection.endElement !== userDoc.lastChild) {
-			// insert at end
-			userDoc.append(...selectedNodes());
-			countChildWords();
-			setCurrentSelection(beforeExpansion);
-			restoreSelection();
-			return true;
+		if (movingSection) {
+			const nextRelevantElement = nextVisibleOrderableSiblingOfLevelOrHigher(currentSelection.endElement, showingLevel).sibling;
+			if (nextRelevantElement) {
+				const lastRelevantElement = nextVisibleOrderableSiblingOfLevelOrHigher(nextRelevantElement, showingLevel).sibling;
+				if (lastRelevantElement) {
+					// put BEFORE the next node
+					lastRelevantElement.before(...selectedNodes());
+					countChildWords();
+					setCurrentSelection(beforeExpansion);
+					restoreSelection();
+					return true;
+				} else if (currentSelection.endElement !== userDoc.lastChild) {
+					// insert at end
+					userDoc.append(...selectedNodes());
+					countChildWords();
+					setCurrentSelection(beforeExpansion);
+					restoreSelection();
+					return true;
+				} else {
+					setCurrentSelection(beforeExpansion);
+				}
+			}  else if (currentSelection.endElement !== userDoc.lastChild) {
+				// insert at end
+				userDoc.append(...selectedNodes());
+				countChildWords();
+				setCurrentSelection(beforeExpansion);
+				restoreSelection();
+				return true;
+			} else {
+				setCurrentSelection(beforeExpansion);
+			}
 		} else {
-			setCurrentSelection(beforeExpansion);
+			const nextElement = thisOrLastHiddenChild(nextVisibleOrderableSibling(currentSelection.endElement).sibling);
+			if (nextElement) {
+				nextElement.after(...selectedNodes());
+				countChildWords();
+				setCurrentSelection(beforeExpansion);
+				restoreSelection();
+				return true;
+			} else if (currentSelection.endElement !== userDoc.lastChild) {
+				// insert at end
+				userDoc.append(...selectedNodes());
+				countChildWords();
+				setCurrentSelection(beforeExpansion);
+				restoreSelection();
+				return true;
+			} else {
+				setCurrentSelection(beforeExpansion);
+			}
 		}
 	} else {
 		setCurrentSelection(beforeExpansion);
@@ -1757,13 +1931,15 @@ function inputOverrides(event) {
 					moveDownSection();
 				}
 			} else if (arrowLeftPressed) {
-				//if (increaseShowingLevel()) {
-				//	
-				//}
+				event.preventDefault();
+				if (increaseShowingLevel()) {
+					
+				}
 			} else if (arrowRightPressed) {
-				//if (decreaseShowingLevel()) {
-				//	
-				//}
+				event.preventDefault();
+				if (decreaseShowingLevel()) {
+					
+				}
 			} else if (event.key === "Enter") { // Toggle Alternative Style B
 				event.preventDefault();
 				newInputType = inputEventToggleAltB;
@@ -1772,7 +1948,7 @@ function inputOverrides(event) {
 				updateSelection();
 				let targetNode;
 				for (targetNode of selectedVisibleElements()) {
-					DoToggleAltB(targetNode);
+					doToggleAltB(targetNode);
 				}
 			}
 		} else {
@@ -1796,7 +1972,11 @@ function inputOverrides(event) {
 				savedRedo = true;
 				recountHandled = true;
 				updateSelection();
+				const isSingle = isSingleElementSelection();
 				promoteSelectedNodes();
+				if (isSingle) {
+					matchContextListType(currentSelection.startElement);
+				}
 				countChildWords();
 			} else if (arrowRightPressed) { // Demote/Adjust
 				event.preventDefault();
@@ -1805,7 +1985,11 @@ function inputOverrides(event) {
 				savedRedo = true;
 				recountHandled = true;
 				updateSelection();
+				const isSingle = isSingleElementSelection();
 				demoteSelectedNodes();
+				if (isSingle) {
+					matchContextListType(currentSelection.startElement);
+				}
 				countChildWords();
 			} else if (event.key === "h") { // Hide/Unhide
 				// work from end to beginning of selection, toggling hidden status
@@ -1849,7 +2033,7 @@ function inputOverrides(event) {
 				updateSelection();
 				let targetNode;
 				for (targetNode of selectedVisibleElements()) {
-					DoToggleAltA(targetNode);
+					doToggleAltA(targetNode);
 				}
 			}
 		}
@@ -1877,23 +2061,23 @@ function inputOverrides(event) {
 	} else {
 		if (event.key === "Tab") {
 			updateSelection();
-			if (CanDoTab()) {
+			if (canDoTab()) {
 				event.preventDefault();
 				newInputType = inputEventPromote;
 				savedRedo = true;
 				saveStatesForUndoRedo();
-				DoTab();
+				doTab();
 			}
 		} else if (event.key === " ") { // space at beginning does "tab"
 			updateSelection();
 			if (!isSelection() && currentSelection.endNode) {
 				if (currentSelection.startOffset === 0) {
-					if (CanDoTab()) {
+					if (canDoTab()) {
 						event.preventDefault();
 						newInputType = inputEventPromote;
 						saveStatesForUndoRedo();
 						savedRedo = true;
-						DoTab();
+						doTab();
 					}
 				}
 			}
@@ -1908,6 +2092,7 @@ function inputOverrides(event) {
 					savedRedo = true;
 					// promote by one
 					setListLevel(targetNode, currentNodeLevel - pLevel - 1);
+					matchContextListType(targetNode);
 					return;
 				}
 			}
@@ -1926,8 +2111,9 @@ function inputOverrides(event) {
 						if (currentNodeLevel === pLevel) { // clear alt modes
 							targetNode.classList.remove("altA");
 							targetNode.classList.remove("altB");
-						} else if (currentNodeLevel > pLevel) { // promote all the way
-							setListLevel(targetNode, 0);
+						} else if (currentNodeLevel > pLevel) { // promote by one
+							setListLevel(targetNode, currentNodeLevel - pLevel - 1);
+							matchContextListType(currentSelection.startElement);
 						} else { // let's also convert headings to paragraphs as appropriate
 							convertNodeToType(targetNode, "P");
 							restoreSelection();

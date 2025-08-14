@@ -25,10 +25,6 @@ body {
 	border-left-color: transparent;
 }
 
-#userDoc .focusedParent {
-	padding-left: 50%;
-}
-
 #userDoc :is(h1, h2, h3, h4, h5, h6) {
 	counter-set: list_1 0 list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
@@ -241,17 +237,13 @@ body {
 	border-left-color: #33AAEE;
 }
 
-#userDoc .aboveFocusedParent {
-	display: none;
-}
-
-#userDoc .belowFocusedParent {
-	display: none;
-}
-
 #userDoc .hiddenParent {
 	display: none;
 	counter-set: none;
+}
+
+#userDoc .hiddenLevel {
+	display: none;
 }
 
 /* Adapt to smaller screens */
