@@ -1637,13 +1637,13 @@ function increaseShowingLevel() {
 		// what about the end of the selection, though?
 		if (isSingle) {
 			currentSelection.endElement = currentSelection.startElement;
-			currentSelection.endNode = currentSelection.endNode;
+			currentSelection.endNode = currentSelection.startNode;
 			currentSelection.endOffset = currentSelection.startOffset;
 		} else if (getOrCalculateNodeLevel(currentSelection.endElement) > showingLevel) {
 			const visibleSiblingBeforeEnd = previousVisibleOrderableSiblingOfLevelOrHigher(currentSelection.endElement, showingLevel).sibling;
 			if (!visibleSiblingBeforeEnd) { // full collapse
 				currentSelection.endElement = currentSelection.startElement;
-				currentSelection.endNode = currentSelection.endNode;
+				currentSelection.endNode = currentSelection.startNode;
 				currentSelection.endOffset = currentSelection.startOffset;
 			} else {
 				// select end

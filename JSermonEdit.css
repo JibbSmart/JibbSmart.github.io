@@ -13,16 +13,17 @@ body {
 	padding-top: 5px;
 	padding-bottom: 100px;
 	counter-reset: list_1 list_2 list_3 list_4 list_5 list_6 list_7 list_8;
+	interpolate-size: allow-keywords;
 }
 
 #userDoc :is(h1, h2, h3, h4, h5, h6, p) {
 	text-align: start;
 	padding-left: 5px;
 	padding-right: 8px;
-	/*transition: opacity 0.25s, padding-left 0.25s;*/
 	border-left-style: solid;
 	border-left-width: thick;
 	border-left-color: transparent;
+	transition: visibility 0s 0s, opacity 0.125s linear 0.125s, height 0.125s 0s, margin 0.125s 0s;
 }
 
 #userDoc :is(h1, h2, h3, h4, h5, h6) {
@@ -238,12 +239,22 @@ body {
 }
 
 #userDoc .hiddenParent {
-	display: none;
+	visibility: hidden;
 	counter-set: none;
+	opacity: 0;
+	height: 0;
+	margin-top: 10px;
+	margin-bottom: -10px;
+	transition: visibility 0s 0.25s, opacity 0.125s 0s, height 0.125s 0.125s, margin 0.125s 0.125s;
 }
 
 #userDoc .hiddenLevel {
-	display: none;
+	visibility: hidden;
+	opacity: 0;
+	height: 0;
+	margin-top: 10px;
+	margin-bottom: -10px;
+	transition: visibility 0s 0.25s, opacity 0.125s 0s, height 0.125s 0.125s, margin 0.125s 0.125s;
 }
 
 /* Adapt to smaller screens */
