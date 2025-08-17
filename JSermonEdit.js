@@ -63,6 +63,7 @@ const orderableSet = new Set([
 let showingLevel = maxShowingLevel;
 
 const currentSelection = {};
+currentSelection.isValid = false;
 currentSelection.selectionObject = document.getSelection();
 currentSelection.startNode = currentSelection.selectionObject.anchorNode;
 currentSelection.startElement = currentSelection.startNode;
@@ -71,33 +72,48 @@ currentSelection.endNode = currentSelection.selectionObject.focusNode;
 currentSelection.endElement = currentSelection.startNode;
 currentSelection.endOffset = 0;
 currentSelection.focusBeforeAnchor = false;
+currentSelection.charBefore = null;
 
 function copyCurrentSelection() {
 	const newSelection = {};
+	newSelection.isValid = currentSelection.isValid;
 	newSelection.startNode = currentSelection.startNode;
 	newSelection.startElement = currentSelection.startElement;
 	newSelection.startOffset = currentSelection.startOffset;
 	newSelection.endNode = currentSelection.endNode;
 	newSelection.endElement = currentSelection.endElement;
 	newSelection.endOffset = currentSelection.endOffset;
+	newSelection.charBefore = currentSelection.charBefore;
 	return newSelection;
 }
 
 function setCurrentSelection(otherSelection) {
+	currentSelection.isValid = otherSelection.isValid;
 	currentSelection.startNode = otherSelection.startNode;
 	currentSelection.startElement = otherSelection.startElement;
 	currentSelection.startOffset = otherSelection.startOffset;
 	currentSelection.endNode = otherSelection.endNode;
 	currentSelection.endElement = otherSelection.endElement;
 	currentSelection.endOffset = otherSelection.endOffset;
+	currentSelection.charBefore = otherSelection.charBefore;
 }
 
 function isSelection() {
-	return currentSelection.selectionObject.type === "Range";
+	return !currentSelection.isValid ||
+		currentSelection.startElement !== currentSelection.endElement ||
+		currentSelection.startNode !== currentSelection.endNode ||
+		currentSelection.startOffset !== currentSelection.endOffset;
 }
 
 function isSingleElementSelection() {
-	return currentSelection.startElement === currentSelection.endElement;
+	return currentSelection.isValid && currentSelection.startElement === currentSelection.endElement;
+}
+
+function getStringIfTextNode(inNode) {
+	if (inNode.nodeType === Node.TEXT_NODE) {
+		return inNode.data;
+	}
+	return null;
 }
 
 function updateSelection() {
@@ -105,19 +121,84 @@ function updateSelection() {
 	currentSelection.selectionObject = selectionObject;
 	if (currentSelection) {
 		let focusBeforeAnchor = false;
-		if (selectionObject.anchorNode === selectionObject.focusNode && selectionObject.focusOffset < selectionObject.anchorOffset) {
-			focusBeforeAnchor = true;
-		} else if (selectionObject.anchorNode && (selectionObject.anchorNode.compareDocumentPosition(selectionObject.focusNode) & Node.DOCUMENT_POSITION_PRECEDING)) {
-			focusBeforeAnchor = true;
+		let selectionOrientationFound = false;
+		if (selectionObject.anchorNode === selectionObject.focusNode) {
+			focusBeforeAnchor = selectionObject.focusOffset < selectionObject.anchorOffset;
+			selectionOrientationFound = true;
+		} else if (selectionObject.anchorNode && selectionObject.focusNode) {
+			const relativePosition = selectionObject.anchorNode.compareDocumentPosition(selectionObject.focusNode);
+			if (relativePosition & Node.DOCUMENT_POSITION_PRECEDING) {
+				focusBeforeAnchor = true;
+				selectionOrientationFound = true;
+			} else if (relativePosition & Node.DOCUMENT_POSITION_FOLLOWING) {
+				focusBeforeAnchor = false;
+				selectionOrientationFound = true;
+			}
+		}
+		let startElement;
+		let endElement;
+		let startNode = selectionObject.anchorNode;
+		let endNode = selectionObject.focusNode;
+		let startOffset = selectionObject.anchorOffset;
+		let endOffset = selectionObject.focusOffset;
+		if (!selectionOrientationFound) {
+			// probably one is a parent of the other
+			startElement = getOrderableParent(startNode);
+			endElement = getOrderableParent(endNode);
+			if (startElement === endElement) {
+				const startOffset = getOffsetInParentNode(startElement, startNode, startOffset);
+				const endOffset = getOffsetInParentNode(endElement, endNode, endOffset);
+				if (endOffset < startOffset) {
+					focusBeforeAnchor = true;
+					let temp = startElement;
+					startElement = endElement;
+					endElement = temp;
+
+					temp = startNode;
+					startNode = endNode;
+					endNode = temp;
+
+					temp = startOffset;
+					startOffset = endOffset;
+					endOffset = temp;
+				}
+				currentSelection.isValid = true;
+			} else {
+				currentSelection.isValid = false;
+			}
+		} else {
+			if (focusBeforeAnchor) {
+				startNode = selectionObject.focusNode;
+				startOffset = selectionObject.focusOffset;
+				endNode = selectionObject.anchorNode;
+				endOffset = selectionObject.anchorOffset;
+			} else {
+				startNode = selectionObject.anchorNode;
+				startOffset = selectionObject.anchorOffset;
+				endNode = selectionObject.focusNode;
+				endOffset = selectionObject.focusOffset;
+			}
+			startElement = getOrderableParent(startNode);
+			endElement = getOrderableParent(endNode);
+			currentSelection.isValid = (startElement && endElement);
 		}
 		currentSelection.focusBeforeAnchor = focusBeforeAnchor;
-		currentSelection.startNode = focusBeforeAnchor ? selectionObject.focusNode : selectionObject.anchorNode;
-		currentSelection.startElement = getOrderableParent(currentSelection.startNode);
-		currentSelection.startOffset = focusBeforeAnchor ? selectionObject.focusOffset : selectionObject.anchorOffset;
-		currentSelection.endNode = focusBeforeAnchor ? selectionObject.anchorNode : selectionObject.focusNode;
-		currentSelection.endElement = getOrderableParent(currentSelection.endNode);
-		currentSelection.endOffset = focusBeforeAnchor ? selectionObject.anchorOffset : selectionObject.focusOffset;
+		currentSelection.startNode = startNode;
+		currentSelection.startElement = startElement;
+		currentSelection.startOffset = startOffset;
+		currentSelection.endNode = endNode;
+		currentSelection.endElement = endElement;
+		currentSelection.endOffset = endOffset;
+		currentSelection.charBefore = null;
+		if (currentSelection.isValid && currentSelection.startNode.nodeType === Node.TEXT_NODE) {
+			const startOffset = currentSelection.startOffset;
+			const textData = currentSelection.startNode.data;
+			if (startOffset <= textData.length && startOffset > 0) {
+				currentSelection.charBefore = textData[startOffset - 1];
+			}
+		}
 	} else {
+		currentSelection.isValid = false;
 		currentSelection.startNode = null;
 		currentSelection.startElement = null;
 		currentSelection.endNode = null;
@@ -125,6 +206,7 @@ function updateSelection() {
 		currentSelection.startOffset = 0;
 		currentSelection.endOffset = 0;
 		currentSelection.focusBeforeAnchor = false;
+		currentSelection.charBefore = null;
 	}
 	return currentSelection.startElement;
 }
@@ -231,9 +313,11 @@ function findNodeAndOffset(inParent, inOffset) {
 			lastTextNode = childNode;
 			offsetCounted += childNode.data.length;
 			if (offsetCounted >= inOffset) {
+				const indexAtOffset = childNode.data.length - (offsetCounted - inOffset);
 				return {
 					leafNode: childNode,
-					offset: childNode.data.length - (offsetCounted - inOffset)
+					offset: indexAtOffset,
+					chartAtOffset: indexAtOffset >= 0 ? childNode.data[indexAtOffset - 1] : null
 				};
 			}
 		}
@@ -246,10 +330,17 @@ function findNodeAndOffset(inParent, inOffset) {
 		childNode = childNode.nextSibling;
 	}
 	// went past end, but still useful to have last text node if there was one:
-	return {
-		leafNode: lastTextNode,
-		offset: lastTextNode ? lastTextNode.data.length : -1
-	};
+	if (lastTextNode) {
+		const indexAtEnd = lastTextNode.data.length;
+		return {
+			leafNode: lastTextNode,
+			offset: indexAtEnd,
+			charAtOffset: indexAtEnd > 0 ? lastTextNode.data[indexAtEnd - 1] : null,
+			overshot: true
+		};
+	}
+
+	return null;
 }
 
 function copySelectedContent() {
@@ -437,7 +528,9 @@ function setCompleteState(inState) {
 			currentSelection.endNode = currentSelection.endElement;
 			currentSelection.endOffset = 0;
 		}
+		ignoreSelectionChanges = true;
 		restoreSelection();
+		ignoreSelectionChanges = false;
 	}
 
 	return true;
@@ -1707,14 +1800,18 @@ function moveUpSimple() {
 			previousElement.before(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
+			ignoreSelectionChanges = true;
 			restoreSelection();
+			ignoreSelectionChanges = false;
 			return true;
 		} else if (currentSelection.startElement !== userDoc.firstChild && !movingSection) {
 			// insert at beginning
 			userDoc.prepend(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
+			ignoreSelectionChanges = true;
 			restoreSelection();
+			ignoreSelectionChanges = false;
 			return true;
 		} else {
 			setCurrentSelection(beforeExpansion);
@@ -1744,14 +1841,18 @@ function moveDownSimple() {
 					lastRelevantElement.before(...selectedNodes());
 					countChildWords();
 					setCurrentSelection(beforeExpansion);
+					ignoreSelectionChanges = true;
 					restoreSelection();
+					ignoreSelectionChanges = false;
 					return true;
 				} else if (currentSelection.endElement !== userDoc.lastChild) {
 					// insert at end
 					userDoc.append(...selectedNodes());
 					countChildWords();
 					setCurrentSelection(beforeExpansion);
+					ignoreSelectionChanges = true;
 					restoreSelection();
+					ignoreSelectionChanges = false;
 					return true;
 				} else {
 					setCurrentSelection(beforeExpansion);
@@ -1761,7 +1862,9 @@ function moveDownSimple() {
 				userDoc.append(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
+				ignoreSelectionChanges = true;
 				restoreSelection();
+				ignoreSelectionChanges = false;
 				return true;
 			} else {
 				setCurrentSelection(beforeExpansion);
@@ -1772,14 +1875,18 @@ function moveDownSimple() {
 				nextElement.after(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
+				ignoreSelectionChanges = true;
 				restoreSelection();
+				ignoreSelectionChanges = false;
 				return true;
 			} else if (currentSelection.endElement !== userDoc.lastChild) {
 				// insert at end
 				userDoc.append(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
+				ignoreSelectionChanges = true;
 				restoreSelection();
+				ignoreSelectionChanges = false;
 				return true;
 			} else {
 				setCurrentSelection(beforeExpansion);
@@ -1804,7 +1911,9 @@ function moveUpSection() {
 			previousElement.before(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
+			ignoreSelectionChanges = true;
 			restoreSelection();
+			ignoreSelectionChanges = false;
 			return true;
 		} else {
 			setCurrentSelection(beforeExpansion);
@@ -1831,14 +1940,18 @@ function moveDownSection() {
 				lastSearch.sibling.before(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
+				ignoreSelectionChanges = true;
 				restoreSelection();
+				ignoreSelectionChanges = false;
 				return true;
 			} else if (currentSelection.endElement !== userDoc.lastChild) {
 				// insert at end
 				userDoc.append(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
+				ignoreSelectionChanges = true;
 				restoreSelection();
+				ignoreSelectionChanges = false;
 				return true;
 			} else {
 				setCurrentSelection(beforeExpansion);
@@ -1848,7 +1961,9 @@ function moveDownSection() {
 			userDoc.append(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
+			ignoreSelectionChanges = true;
 			restoreSelection();
+			ignoreSelectionChanges = false;
 			return true;
 		} else {
 			setCurrentSelection(beforeExpansion);
@@ -1973,10 +2088,12 @@ function inputOverrides(event) {
 				recountHandled = true;
 				updateSelection();
 				const isSingle = isSingleElementSelection();
+				ignoreSelectionChanges = true;
 				promoteSelectedNodes();
 				if (isSingle) {
 					matchContextListType(currentSelection.startElement);
 				}
+				ignoreSelectionChanges = false;
 				countChildWords();
 			} else if (arrowRightPressed) { // Demote/Adjust
 				event.preventDefault();
@@ -1986,10 +2103,12 @@ function inputOverrides(event) {
 				recountHandled = true;
 				updateSelection();
 				const isSingle = isSingleElementSelection();
+				ignoreSelectionChanges = true;
 				demoteSelectedNodes();
 				if (isSingle) {
 					matchContextListType(currentSelection.startElement);
 				}
+				ignoreSelectionChanges = false;
 				countChildWords();
 			} else if (event.key === "h") { // Hide/Unhide
 				// work from end to beginning of selection, toggling hidden status
@@ -2002,9 +2121,11 @@ function inputOverrides(event) {
 				if (currentSelection.startElement && currentSelection.endElement) {
 					let needsRecount = false;
 					let targetNode;
+					ignoreSelectionChanges = true;
 					for (targetNode of selectedElementsReversed()) {
 						needsRecount = toggleHidden(targetNode) || needsRecount;
 					}
+					ignoreSelectionChanges = false;
 					if (needsRecount) {
 						countChildWords();
 					}
@@ -2017,9 +2138,11 @@ function inputOverrides(event) {
 				updateSelection();
 				expandSelectionToIncludeHiddenChildren();
 				let targetNode;
+				ignoreSelectionChanges = true;
 				for (targetNode of selectedNodes()) {
 					targetNode.remove();
 				}
+				ignoreSelectionChanges = false;
 				// no need to restore previous selection, because that's goooone now, but let's reflect new selection:
 				// TODO: Probably not actually needed. The problem is the empty text is what's selected after delete.
 				// Fix that and then this will probably work automatically due to selection change.
@@ -2098,8 +2221,11 @@ function inputOverrides(event) {
 			}
 		} else if (event.key === "Enter") { // Lots of special case stuff here
 			const targetNode = updateSelection();
-			if (targetNode && targetNode.classList) {
+			if (showingLevel < maxShowingLevel) { // Don't do anything when not showing paragraphs
+				event.preventDefault();
+			} else if (targetNode && targetNode.classList) {
 				// if we have no words or we're before all words, promote to P
+				let processedEnter = false;
 				if (getOrCalculateNodeWordCount(targetNode) === 0 ||
 					getOffsetInParentNode(currentSelection.startElement, currentSelection.startNode, currentSelection.startOffset) === 0) {
 					const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
@@ -2116,13 +2242,15 @@ function inputOverrides(event) {
 							matchContextListType(currentSelection.startElement);
 						} else { // let's also convert headings to paragraphs as appropriate
 							convertNodeToType(targetNode, "P");
+							ignoreSelectionChanges = true;
 							restoreSelection();
+							ignoreSelectionChanges = false;
 						}
-						return;
+						processedEnter = true;
 					}
 				}
 				let needsToClear = true;
-				if (targetNode instanceof HTMLHeadingElement) {
+				if (!processedEnter && targetNode instanceof HTMLHeadingElement) {
 					if (!isSelection() && currentSelection.endOffset === currentSelection.endNode.textContent.length) {
 						needsToClear = false;
 						event.preventDefault();
@@ -2253,7 +2381,7 @@ function addParagraphHighlights() {
 
 function selectionChange(event) {
 	// this happens after EVERY change, so it could be useful for:
-	//	- detecting meaningful changes
+	//	- detecting meaningful that don't get proper events
 	// 	- sanitising pasted content
 	//	- updating undo/redo stack
 
@@ -2347,6 +2475,19 @@ function pasting(event) {
 	numNodesPastingInto = clearParagraphHighlights();
 }
 
+function visibilityChange() {
+	if (document.visibilityState === "hidden") {
+		localStorage.setItem("lastSession", userDoc.innerHTML);
+	}
+}
+
+function load(event) {
+	const lastSession = localStorage.getItem("lastSession");
+	if (lastSession) {
+		userDoc.innerHTML = lastSession;
+	}
+}
+
 tableOfContents.addEventListener("keydown", inputOverrides);
 tableOfContents.addEventListener("keyup", keyRelease);
 
@@ -2355,3 +2496,6 @@ userDoc.addEventListener("keyup", keyRelease);
 userDoc.addEventListener("paste", pasting);
 
 document.addEventListener("selectionchange", selectionChange);
+document.addEventListener("onvisibilitychange", visibilityChange);
+
+window.addEventListener("load", load);
