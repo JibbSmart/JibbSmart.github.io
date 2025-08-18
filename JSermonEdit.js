@@ -2475,17 +2475,27 @@ function pasting(event) {
 	numNodesPastingInto = clearParagraphHighlights();
 }
 
-function visibilityChange() {
-	if (document.visibilityState === "hidden") {
-		localStorage.setItem("lastSession", userDoc.innerHTML);
-	}
+function saveSession() {
+	clearParagraphHighlights();
+	localStorage.setItem("lastSession", userDoc.innerHTML);
+	addParagraphHighlights();
 }
 
-function load(event) {
+function loadSession() {
 	const lastSession = localStorage.getItem("lastSession");
 	if (lastSession) {
 		userDoc.innerHTML = lastSession;
 	}
+}
+
+function visibilityChange() {
+	if (document.visibilityState === "hidden") {
+		saveSession();
+	}
+}
+
+function load(event) {
+	loadSession();
 }
 
 tableOfContents.addEventListener("keydown", inputOverrides);
@@ -2496,6 +2506,6 @@ userDoc.addEventListener("keyup", keyRelease);
 userDoc.addEventListener("paste", pasting);
 
 document.addEventListener("selectionchange", selectionChange);
-document.addEventListener("onvisibilitychange", visibilityChange);
+document.addEventListener("visibilitychange", visibilityChange);
 
 window.addEventListener("load", load);
