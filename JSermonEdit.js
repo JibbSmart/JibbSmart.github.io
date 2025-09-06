@@ -63,6 +63,9 @@ const orderableSet = new Set([
 let showingLevel = maxShowingLevel;
 
 let currentFileHandle = null;
+let currentFileName = "";
+const titleNoFileName = "JSermonEdit";
+const titleTail = " - " + titleNoFileName;
 
 const currentSelection = {};
 currentSelection.isValid = false;
@@ -2160,6 +2163,9 @@ function inputOverrides(event) {
 				for (targetNode of selectedVisibleElements()) {
 					doToggleAltA(targetNode);
 				}
+			} else if (event.key === "s") { // Save with editor so it can be easily viewed elsewhere
+				event.preventDefault();
+				saveWithEditor();
 			}
 		}
 	} else if (event.ctrlKey) {
@@ -2182,10 +2188,10 @@ function inputOverrides(event) {
 		//		doUndo();
 		//		ignoreSelectionChanges = false;
 			}
-		} else if (event.key === "s") {
+		} else if (event.key === "s") { // Save content to file
 			event.preventDefault();
 			saveWithoutHighlights();
-		} else if (event.key === "o") {
+		} else if (event.key === "o") { // Open content file
 			event.preventDefault();
 			openFile();
 		}
@@ -2485,12 +2491,14 @@ function pasting(event) {
 
 function saveSession() {
 	clearParagraphHighlights();
-	localStorage.setItem("lastSession", userDoc.innerHTML);
+	const sessionKey = currentFileName ? currentFileName : "lastSession";
+	localStorage.setItem(sessionKey, userDoc.innerHTML);
 	addParagraphHighlights();
 }
 
 function loadSession() {
-	const lastSession = localStorage.getItem("lastSession");
+	const lastSessionKey = currentFileName ? currentFileName : "lastSession";
+	const lastSession = localStorage.getItem(lastSessionKey);
 	if (lastSession) {
 		userDoc.innerHTML = lastSession;
 	}
@@ -2503,21 +2511,34 @@ function visibilityChange() {
 }
 
 function load(event) {
+	currentFileName = window.location.pathname.split('/').pop();
+	if (currentFileName) {
+		document.title = currentFileName + titleTail;
+	} else {
+		document.title = titleNoFileName;
+	}
 	loadSession();
+}
+
+function saveWithEditor() {
+	clearParagraphHighlights();
+	saveFile("<!DOCTYPE html>" + "\n" + document.documentElement.outerHTML, false, "Editor Included HTML");
+	addParagraphHighlights();
 }
 
 function saveWithoutHighlights() {
 	clearParagraphHighlights();
-	saveFile(userDoc.innerHTML);
+	saveFile(userDoc.innerHTML, true, "HTML Files");
 	addParagraphHighlights();
 }
 
-async function saveFile(fileContent) {
+async function saveFile(fileContent, canSkipDialogIfSavedHandleValid, saveDescription) {
 	if (!fileContent) {
 		return;
 	}
 
-	let fileHandle = currentFileHandle;
+	let fileName = null;
+	let fileHandle = canSkipDialogIfSavedHandleValid ? currentFileHandle : null;
 	if (fileHandle) {
 		// attempt regular save
 		try {
@@ -2533,7 +2554,7 @@ async function saveFile(fileContent) {
 		const options = {
 			types: [
 				{
-					description: "HTML Files",
+					description: saveDescription,
 					accept: {
 						"text/html": [".html"]
 					},
@@ -2543,16 +2564,25 @@ async function saveFile(fileContent) {
 		};
 		try {
 			fileHandle = await window.showSaveFilePicker(options);
-			currentFileHandle = null;
+			const file = await fileHandle.getFile();
+			fileName = file.name;
 			const writable = await fileHandle.createWritable();
 			await writable.write(fileContent);
 			await writable.close();
 		} catch {
+			if (canSkipDialogIfSavedHandleValid) {
+				currentFileHandle = null;
+			}
 			return;
 		}
 	}
 
-	currentFileHandle = fileHandle;
+	if (canSkipDialogIfSavedHandleValid) {
+		currentFileHandle = fileHandle;
+		if (fileName) {
+			document.title = file.name + titleTail;
+		}
+	}
 }
 
 async function openFile() {
@@ -2574,6 +2604,7 @@ async function openFile() {
 		[fileHandle] = await window.showOpenFilePicker(options);
 		const file = await fileHandle.getFile();
 		contents = await file.text();
+		document.title = file.name + titleTail;
 	} catch {
 		return;
 	}
