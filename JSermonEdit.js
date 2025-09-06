@@ -62,6 +62,8 @@ const orderableSet = new Set([
 
 let showingLevel = maxShowingLevel;
 
+let currentFileHandle = null;
+
 const currentSelection = {};
 currentSelection.isValid = false;
 currentSelection.selectionObject = document.getSelection();
@@ -2180,6 +2182,12 @@ function inputOverrides(event) {
 		//		doUndo();
 		//		ignoreSelectionChanges = false;
 			}
+		} else if (event.key === "s") {
+			event.preventDefault();
+			saveWithoutHighlights();
+		} else if (event.key === "o") {
+			event.preventDefault();
+			openFile();
 		}
 	} else {
 		if (event.key === "Tab") {
@@ -2496,6 +2504,82 @@ function visibilityChange() {
 
 function load(event) {
 	loadSession();
+}
+
+function saveWithoutHighlights() {
+	clearParagraphHighlights();
+	saveFile(userDoc.innerHTML);
+	addParagraphHighlights();
+}
+
+async function saveFile(fileContent) {
+	if (!fileContent) {
+		return;
+	}
+
+	let fileHandle = currentFileHandle;
+	if (fileHandle) {
+		// attempt regular save
+		try {
+			const writable = await fileHandle.createWritable();
+			await writable.write(fileContent);
+			await writable.close();
+		} catch {
+			fileHandle = null;
+		}
+	}
+
+	if (!fileHandle) {
+		const options = {
+			types: [
+				{
+					description: "HTML Files",
+					accept: {
+						"text/html": [".html"]
+					},
+				},
+			],
+			multiple: false,
+		};
+		try {
+			fileHandle = await window.showSaveFilePicker(options);
+			currentFileHandle = null;
+			const writable = await fileHandle.createWritable();
+			await writable.write(fileContent);
+			await writable.close();
+		} catch {
+			return;
+		}
+	}
+
+	currentFileHandle = fileHandle;
+}
+
+async function openFile() {
+	const options = {
+		types: [
+			{
+				description: "HTML Files",
+				accept: {
+					"text/html": [".html"]
+				},
+			},
+		],
+		excludeAcceptAllOption: true,
+		multiple: false,
+	};
+
+	let contents, fileHandle;
+	try {
+		[fileHandle] = await window.showOpenFilePicker(options);
+		const file = await fileHandle.getFile();
+		contents = await file.text();
+	} catch {
+		return;
+	}
+
+	userDoc.innerHTML = contents;
+	currentFileHandle = fileHandle;
 }
 
 tableOfContents.addEventListener("keydown", inputOverrides);
