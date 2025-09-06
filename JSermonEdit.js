@@ -60,12 +60,24 @@ const orderableSet = new Set([
 	"P"
 ]);
 
+const safeContentNodeTypes = new Set([
+	"H1",
+	"H2",
+	"H3",
+	"H4",
+	"P",
+	"#text",
+	"BR"
+]);
+
 let showingLevel = maxShowingLevel;
 
 let currentFileHandle = null;
 let currentFileName = "";
-const titleNoFileName = "JSermonEdit";
-const titleTail = " - " + titleNoFileName;
+const savedWithEditorTitle = "Editor Included";
+const titleNoFile = "JSermonEdit";
+const titleTail = " - " + titleNoFile;
+let isEditorBuiltInSession = false;
 
 const currentSelection = {};
 currentSelection.isValid = false;
@@ -2163,9 +2175,9 @@ function inputOverrides(event) {
 				for (targetNode of selectedVisibleElements()) {
 					doToggleAltA(targetNode);
 				}
-			} else if (event.key === "s") { // Save with editor so it can be easily viewed elsewhere
+			} else if (event.key === "s") { // Save with editor so it can be easily viewed elsewhere -- can only be "save as"
 				event.preventDefault();
-				saveWithEditor();
+				saveWithEditor(true);
 			}
 		}
 	} else if (event.ctrlKey) {
@@ -2190,7 +2202,11 @@ function inputOverrides(event) {
 			}
 		} else if (event.key === "s") { // Save content to file
 			event.preventDefault();
-			saveWithoutHighlights();
+			if (isEditorBuiltInSession) { // If this editor is built into the doc, we don't want to risk over-writing with a "content-only" file, so force it to save with editor
+				saveWithEditor(false);
+			} else {
+				saveWithoutHighlights(); // Otherwise, this just saves the content in the doc for opening from the editor
+			}
 		} else if (event.key === "o") { // Open content file
 			event.preventDefault();
 			openFile();
@@ -2497,11 +2513,26 @@ function saveSession() {
 }
 
 function loadSession() {
-	const lastSessionKey = currentFileName ? currentFileName : "lastSession";
-	const lastSession = localStorage.getItem(lastSessionKey);
-	if (lastSession) {
-		userDoc.innerHTML = lastSession;
+	let allowLastSessionFallback = true;
+	if (isEditorBuiltInSession) {
+		// If this file is content+editor, then we want to avoid overriding content unless we are sure it's relevant to this file.
+		allowLastSessionFallback = false;
 	}
+	if (currentFileName) {
+		const lastSession = localStorage.getItem(currentFileName);
+		if (lastSession) {
+			userDoc.innerHTML = lastSession;
+			return true;
+		}
+	}
+	if (allowLastSessionFallback) {
+		const lastSession = localStorage.getItem("lastSession");
+		if (lastSession) {
+			userDoc.innerHTML = lastSession;
+			return true;
+		}
+	}
+	return false;
 }
 
 function visibilityChange() {
@@ -2512,33 +2543,38 @@ function visibilityChange() {
 
 function load(event) {
 	currentFileName = window.location.pathname.split('/').pop();
-	if (currentFileName) {
-		document.title = currentFileName + titleTail;
+	isEditorBuiltInSession = document.title === savedWithEditorTitle;
+	if (loadSession() && !isEditorBuiltInSession) {
+		document.title = "Continuing last session" + titleTail;
+	} else if (isEditorBuiltInSession && currentFileName) {
+		document.title = currentFileName;
 	} else {
-		document.title = titleNoFileName;
+		document.title = titleNoFile;
 	}
-	loadSession();
 }
 
-function saveWithEditor() {
+function saveWithEditor(forceSaveAs) {
 	clearParagraphHighlights();
-	saveFile("<!DOCTYPE html>" + "\n" + document.documentElement.outerHTML, false, "Editor Included HTML");
+	const currentTitle = document.title;
+	document.title = savedWithEditorTitle; // This lets us know on OPEN not to override with latest session data unless it's associated with this file specifically
+	saveFile("<!DOCTYPE html>" + "\n" + document.documentElement.outerHTML, !forceSaveAs, "Editor with Content as HTML");
+	document.title = currentTitle;
 	addParagraphHighlights();
 }
 
 function saveWithoutHighlights() {
 	clearParagraphHighlights();
-	saveFile(userDoc.innerHTML, true, "HTML Files");
+	saveFile(userDoc.innerHTML, true, "User Content as HTML");
 	addParagraphHighlights();
 }
 
-async function saveFile(fileContent, canSkipDialogIfSavedHandleValid, saveDescription) {
+async function saveFile(fileContent, isSimpleSave, saveDescription) {
 	if (!fileContent) {
 		return;
 	}
 
 	let fileName = null;
-	let fileHandle = canSkipDialogIfSavedHandleValid ? currentFileHandle : null;
+	let fileHandle = isSimpleSave ? currentFileHandle : null;
 	if (fileHandle) {
 		// attempt regular save
 		try {
@@ -2570,17 +2606,18 @@ async function saveFile(fileContent, canSkipDialogIfSavedHandleValid, saveDescri
 			await writable.write(fileContent);
 			await writable.close();
 		} catch {
-			if (canSkipDialogIfSavedHandleValid) {
+			if (isSimpleSave) {
 				currentFileHandle = null;
 			}
 			return;
 		}
 	}
 
-	if (canSkipDialogIfSavedHandleValid) {
+	if (isSimpleSave) {
+		// Simple / normal saves update the document Title to show THIS is the file we are working on
 		currentFileHandle = fileHandle;
 		if (fileName) {
-			document.title = file.name + titleTail;
+			document.title = fileName + titleTail;
 		}
 	}
 }
@@ -2600,17 +2637,59 @@ async function openFile() {
 	};
 
 	let contents, fileHandle;
+	let fileName = null;
 	try {
 		[fileHandle] = await window.showOpenFilePicker(options);
 		const file = await fileHandle.getFile();
+		fileName = file.name;
 		contents = await file.text();
-		document.title = file.name + titleTail;
 	} catch {
 		return;
 	}
 
-	userDoc.innerHTML = contents;
-	currentFileHandle = fileHandle;
+	// sanitize here:
+	let foundBadNodes = false;
+	let foundEditorBuiltInNodes = false;
+	const template = document.createElement("template");
+	template.innerHTML = contents;
+	const sanitizedTemplate = document.createElement("template");
+	let currentNode = template.content.firstChild;
+	while (currentNode) {
+		if (!currentNode.nodeName || !safeContentNodeTypes.has(currentNode.nodeName)) {
+			foundBadNodes = true;
+			if (currentNode.nodeName === "DIV" && currentNode.id === "userDoc") {
+				foundEditorBuildInNodes = true;
+				currentNode.after(...currentNode.childNodes);
+				// Pull these poor buggers out
+			}
+			currentNode.remove();
+		} else {
+			sanitizedTemplate.content.append(currentNode);
+		}
+		currentNode = template.content.firstChild;
+	}
+
+	userDoc.innerHTML = sanitizedTemplate.innerHTML;
+	template.remove();
+	sanitizedTemplate.remove();
+	if (foundBadNodes) {
+		// That's fine, we can sanitize it, but don't want to make it easy to then overwrite this file.
+		// So prevent simple save and update title to reflect that this content was modified to be included.
+		currentFileHandle = null;
+		document.title = "Imported content from " + fileName;
+		if (foundEditorBuildInNodes) {
+			// Even if we weren't an EditorBuiltInSession, we've now attempted to open one, so consider this such a session to reduce risk of overwriting with a content file.
+			isEditorBuiltInSession = true;
+		} else {
+			// Definitely over-engineered this, but let's stick with it for now.
+			isEditorBuiltInSession = false;
+		}
+	} else {
+		currentFileHandle = fileHandle;
+		document.title = fileName + titleTail;
+		// Even if we were an EditorBuiltInSession, we've now explicitly opened a Content file, so we're not anymore:
+		isEditorBuiltInSession = false;
+	}
 }
 
 tableOfContents.addEventListener("keydown", inputOverrides);
