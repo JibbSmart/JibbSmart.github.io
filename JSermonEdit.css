@@ -33,7 +33,7 @@ body {
 	border-left-style: solid;
 	border-left-width: thick;
 	border-left-color: transparent;
-	transition: visibility 0s 0s, opacity 0.125s linear 0.125s, height 0.125s 0s, margin 0.125s 0s;
+	/*transition: visibility 0s 0s, opacity 0.125s linear 0.125s, height 0.125s 0s, margin 0.125s 0s;*/
 }
 
 #userDoc :is(h1, h2, h3, h4, h5, h6) {
@@ -255,7 +255,7 @@ body {
 	height: 0;
 	margin-top: 10px;
 	margin-bottom: -10px;
-	transition: visibility 0s 0.25s, opacity 0.125s 0s, height 0.125s 0.125s, margin 0.125s 0.125s;
+	/*transition: visibility 0s 0.25s, opacity 0.125s 0s, height 0.125s 0.125s, margin 0.125s 0.125s;*/
 }
 
 #userDoc .hiddenLevel {
@@ -264,7 +264,7 @@ body {
 	height: 0;
 	margin-top: 10px;
 	margin-bottom: -10px;
-	transition: visibility 0s 0.25s, opacity 0.125s 0s, height 0.125s 0.125s, margin 0.125s 0.125s;
+	/*transition: visibility 0s 0.25s, opacity 0.125s 0s, height 0.125s 0.125s, margin 0.125s 0.125s;*/
 }
 
 /* Adapt to smaller screens */

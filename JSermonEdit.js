@@ -2177,7 +2177,19 @@ function inputOverrides(event) {
 				}
 			} else if (event.key === "s") { // Save with editor so it can be easily viewed elsewhere -- can only be "save as"
 				event.preventDefault();
-				saveWithEditor(true);
+				if (!(event.ctrlKey)) { // Save As
+					if (isEditorBuiltInSession) { // Save As with editor
+						saveWithEditor(true);
+					} else { // Save As just content
+						saveWithoutHighlights(true);
+					}
+				} else { // Export to "other" format (if already "with editor", save just the content; if already just content, save "with editor")
+					if (isEditorBuiltInSession) { // Export just content
+						saveWithoutHighlights(true);
+					} else { // Export with editor
+						saveWithEditor(true);
+					}
+				}
 			}
 		}
 	} else if (event.ctrlKey) {
@@ -2205,7 +2217,7 @@ function inputOverrides(event) {
 			if (isEditorBuiltInSession) { // If this editor is built into the doc, we don't want to risk over-writing with a "content-only" file, so force it to save with editor
 				saveWithEditor(false);
 			} else {
-				saveWithoutHighlights(); // Otherwise, this just saves the content in the doc for opening from the editor
+				saveWithoutHighlights(false); // Otherwise, this just saves the content in the doc for opening from the editor
 			}
 		} else if (event.key === "o") { // Open content file
 			event.preventDefault();
@@ -2562,9 +2574,9 @@ function saveWithEditor(forceSaveAs) {
 	addParagraphHighlights();
 }
 
-function saveWithoutHighlights() {
+function saveWithoutHighlights(forceSaveAs) {
 	clearParagraphHighlights();
-	saveFile(userDoc.innerHTML, true, "User Content as HTML");
+	saveFile(userDoc.innerHTML, !forceSaveAs, "User Content as HTML");
 	addParagraphHighlights();
 }
 
