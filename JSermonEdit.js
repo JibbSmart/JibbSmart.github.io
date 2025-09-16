@@ -79,6 +79,9 @@ const titleNoFile = "JSermonEdit";
 const titleTail = " - " + titleNoFile;
 let isEditorBuiltInSession = false;
 
+let caretViewportX = -1;
+let caretViewportY = -1;
+
 const currentSelection = {};
 currentSelection.isValid = false;
 currentSelection.selectionObject = document.getSelection();
@@ -225,6 +228,9 @@ function updateSelection() {
 		currentSelection.focusBeforeAnchor = false;
 		currentSelection.charBefore = null;
 	}
+
+	updateCaretViewportPosition();
+
 	return currentSelection.startElement;
 }
 
@@ -236,9 +242,66 @@ function restoreSelection() {
 		const newSelection = document.getSelection();
 		newSelection.removeAllRanges();
 		newSelection.addRange(newRange);
+
+		scrollToMaintainCaretViewportPosition();
+
 		return true;
 	}
 	return false;
+}
+
+function updateCaretViewportPosition() {
+	if (currentSelection && currentSelection.selectionObject) {
+		const selectionRange = currentSelection.selectionObject.getRangeAt(0);
+		if (selectionRange) {
+			const selectionRects = selectionRange.getClientRects();
+			const selectionRect = selectionRects.length > 0 ? selectionRects[0] : null;
+			if (selectionRect && (selectionRect.left > 0 || selectionRect.bottom > 0)) {
+				caretViewportX = (selectionRect.left + selectionRect.right) * 0.5;
+				caretViewportY = selectionRect.bottom;
+			} else {
+				caretViewportX = -1;
+				caretViewportY = -1;
+			}
+		} else {
+			caretViewportX = -1;
+			caretViewportY = -1;
+		}
+	} else {
+		caretViewportX = -1;
+		caretViewportY = -1;
+	}
+}
+
+function scrollToMaintainCaretViewportPosition() {
+	if (caretViewportX > 0 || caretViewportY > 0) {
+		// get difference in position
+		let diffX = 0;
+		let diffY = 0;
+		const selectionObject = document.getSelection();
+		if (selectionObject) {
+			const selectionRange = selectionObject.getRangeAt(0);
+			if (selectionRange) {
+				const selectionRects = selectionRange.getClientRects();
+				const selectionRect = selectionRects.length > 0 ? selectionRects[0] : null;
+				if (selectionRect && (selectionRect.left > 0 || selectionRect.bottom > 0)) {
+					caretX = (selectionRect.left + selectionRect.right) * 0.5;
+					caretY = selectionRect.bottom;
+
+					diffX = caretX - caretViewportX;
+					diffY = caretY - caretViewportY;
+				}
+			}
+		}
+
+		window.scrollBy({
+			top: diffY,
+			left: diffX,
+			behavior: "instant",
+		});
+		caretViewportX = -1;
+		caretViewportY = -1;
+	}
 }
 
 const undoStack = new Array();
@@ -248,16 +311,17 @@ const historyTypePartial = 2;
 
 const inputEventNoCategory = 0;
 const inputEventText = 1;
-const inputEventBackspace = 2;
-const inputEventDel = 3;
-const inputEventRemove = 4;
-const inputEventMove = 5;
-const inputEventPromote = 6;
-const inputEventHide = 7;
-const inputEventPaste = 8;
-const inputEventUndoRedo = 9;
-const inputEventToggleAltA = 10;
-const inputEventToggleAltB = 10;
+const inputEventEnter = 2;
+const inputEventBackspace = 3;
+const inputEventDel = 4;
+const inputEventRemove = 5;
+const inputEventMove = 6;
+const inputEventPromote = 7;
+const inputEventHide = 8;
+const inputEventPaste = 9;
+const inputEventUndoRedo = 10;
+const inputEventToggleAltA = 11;
+const inputEventToggleAltB = 12;
 
 let currentInputType = inputEventNoCategory;
 let ignoreSelectionChanges = false;
@@ -1995,8 +2059,9 @@ function inputOverrides(event) {
 	let newInputType = inputEventNoCategory;
 
 	// A single Unicode character means it's a typed text input:
-	if (event.key.codePointAt(0)) {
+	if (event.key.length === 1 && event.key.codePointAt(0)) {
 		newInputType = inputEventText;
+		updateSelection();
 	}
 	let savedRedo = false;
 
@@ -2064,13 +2129,15 @@ function inputOverrides(event) {
 				}
 			} else if (arrowLeftPressed) {
 				event.preventDefault();
+				updateSelection();
 				if (increaseShowingLevel()) {
-					
+					scrollToMaintainCaretViewportPosition();
 				}
 			} else if (arrowRightPressed) {
 				event.preventDefault();
+				updateSelection();
 				if (decreaseShowingLevel()) {
-					
+					scrollToMaintainCaretViewportPosition();
 				}
 			} else if (event.key === "Enter") { // Toggle Alternative Style B
 				event.preventDefault();
@@ -2296,7 +2363,7 @@ function inputOverrides(event) {
 					if (!isSelection() && currentSelection.endOffset === currentSelection.endNode.textContent.length) {
 						needsToClear = false;
 						event.preventDefault();
-						newInputType = inputEventText;
+						newInputType = inputEventEnter;
 						saveStatesForUndoRedo();
 						savedRedo = true;
 						//if (currentSelection.type === "Range") {
@@ -2320,13 +2387,13 @@ function inputOverrides(event) {
 						newSelection.removeAllRanges();
 						newSelection.addRange(newRange);
 					} else {
-						newInputType = inputEventText;
+						newInputType = inputEventEnter;
 						clearNodeWordCounters(targetNode);
 					}
 				}
 				if (needsToClear) {
 					// wait, watch-out -- this node might get split! clear counters!
-					newInputType = inputEventText;
+					newInputType = inputEventEnter;
 					clearNodeWordCounters(targetNode);
 				}
 			}
@@ -2445,6 +2512,9 @@ function selectionChange(event) {
 			// sanitize will remove disallowed nodes and clean up empty ones
 			sanitizeNodes(firstNodeToSanitize, numNodesToSanitize);
 
+			// scroll with pasted text
+			scrollToMaintainCaretViewportPosition();
+
 			// update current selection
 			updateSelection();
 
@@ -2466,7 +2536,20 @@ function selectionChange(event) {
 		// clear current highlights
 		clearParagraphHighlights();
 
-		// update current selection
+		// update scroll position if needed
+		switch (currentInputType) {
+			case inputEventText:
+				scrollToMaintainCaretViewportPosition();
+				break;
+			case inputEventEnter:
+				scrollToMaintainCaretViewportPosition();
+				break;
+			case inputEventNoCategory:
+				break;
+			default:
+				break;
+		}
+		currentInputType = inputEventNoCategory;
 		updateSelection();
 		const startChanged = previousSelectionStartElement !== currentSelection.startElement;
 		const endChanged = previousSelectionEndElement !== currentSelection.endElement;
@@ -2505,6 +2588,8 @@ function selectionChange(event) {
 		// apply relevant selected style
 		addParagraphHighlights();
 	}
+
+	currentInputType = inputEventNoCategory;
 }
 
 function pasting(event) {
@@ -2704,6 +2789,11 @@ async function openFile() {
 	}
 }
 
+function onScroll(event) {
+	caretViewportX = -1;
+	caretViewportY = -1;
+}
+
 tableOfContents.addEventListener("keydown", inputOverrides);
 tableOfContents.addEventListener("keyup", keyRelease);
 
@@ -2715,3 +2805,4 @@ document.addEventListener("selectionchange", selectionChange);
 document.addEventListener("visibilitychange", visibilityChange);
 
 window.addEventListener("load", load);
+window.addEventListener("scroll", onScroll);
