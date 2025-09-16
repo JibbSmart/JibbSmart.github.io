@@ -82,6 +82,11 @@ let isEditorBuiltInSession = false;
 let caretViewportX = -1;
 let caretViewportY = -1;
 
+let topScrollMargin = 60;
+let bottomScrollMargin = 60;
+let topScrollTrigger = 15;
+let bottomScrollTrigger = 15;
+
 const currentSelection = {};
 currentSelection.isValid = false;
 currentSelection.selectionObject = document.getSelection();
@@ -229,8 +234,6 @@ function updateSelection() {
 		currentSelection.charBefore = null;
 	}
 
-	updateCaretViewportPosition();
-
 	return currentSelection.startElement;
 }
 
@@ -242,9 +245,6 @@ function restoreSelection() {
 		const newSelection = document.getSelection();
 		newSelection.removeAllRanges();
 		newSelection.addRange(newRange);
-
-		scrollToMaintainCaretViewportPosition();
-
 		return true;
 	}
 	return false;
@@ -258,7 +258,7 @@ function updateCaretViewportPosition() {
 			const selectionRect = selectionRects.length > 0 ? selectionRects[0] : null;
 			if (selectionRect && (selectionRect.left > 0 || selectionRect.bottom > 0)) {
 				caretViewportX = (selectionRect.left + selectionRect.right) * 0.5;
-				caretViewportY = selectionRect.bottom;
+				caretViewportY = Math.min(Math.max(selectionRect.bottom, 0), window.innerHeight);
 			} else {
 				caretViewportX = -1;
 				caretViewportY = -1;
@@ -282,8 +282,7 @@ function scrollToMaintainCaretViewportPosition() {
 		if (selectionObject) {
 			const selectionRange = selectionObject.getRangeAt(0);
 			if (selectionRange) {
-				const selectionRects = selectionRange.getClientRects();
-				const selectionRect = selectionRects.length > 0 ? selectionRects[0] : null;
+				const selectionRect = selectionRange.getBoundingClientRect();
 				if (selectionRect && (selectionRect.left > 0 || selectionRect.bottom > 0)) {
 					caretX = (selectionRect.left + selectionRect.right) * 0.5;
 					caretY = selectionRect.bottom;
@@ -304,6 +303,59 @@ function scrollToMaintainCaretViewportPosition() {
 	}
 }
 
+function scrollToSelectedElementIfNeeded() {
+	if (currentSelection && currentSelection.startElement) {
+		let foundValidCaretInfo = false;
+		const selectionRange = currentSelection.selectionObject.getRangeAt(0);
+		if (selectionRange) {
+			const selectionRect = selectionRange.getBoundingClientRect();
+			if (selectionRect && (selectionRect.left != 0 || selectionRect.bottom != 0)) {
+				const triggerTop = selectionRect.top < topScrollTrigger;
+				const triggerBottom = selectionRect.bottom > window.innerHeight - bottomScrollTrigger;
+				const safeSelectionSize = window.innerHeight - topScrollMargin - bottomScrollMargin;
+				if (selectionRect.height >= safeSelectionSize) {
+					if (currentSelection.focusBeforeAnchor) {
+						if (triggerTop) {
+							window.scrollBy({
+								top: selectionRect.top - topScrollMargin,
+								left: 0,
+								behavior: "smooth",
+							});
+						}
+					} else if (triggerBottom) {
+						window.scrollBy({
+							top: selectionRect.bottom - window.innerHeight + bottomScrollMargin,
+							left: 0,
+							behavior: "smooth",
+						});
+					}
+				} else {
+					if (triggerTop) {
+						window.scrollBy({
+							top: selectionRect.top - topScrollMargin,
+							left: 0,
+							behavior: "smooth",
+						});
+					} else if (triggerBottom) {
+						window.scrollBy({
+							top: selectionRect.bottom - window.innerHeight + bottomScrollMargin,
+							left: 0,
+							behavior: "smooth",
+						});
+					}
+				}
+				foundValidCaretInfo = true;
+			}
+		}
+		if (!foundValidCaretInfo) {
+			// just scroll to the element
+			currentSelection.startElement.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+		}
+	}
+	caretViewportX = -1;
+	caretViewportY = -1;
+}
+
 const undoStack = new Array();
 const redoStack = new Array();
 const historyTypeComplete = 1;
@@ -319,9 +371,10 @@ const inputEventMove = 6;
 const inputEventPromote = 7;
 const inputEventHide = 8;
 const inputEventPaste = 9;
-const inputEventUndoRedo = 10;
-const inputEventToggleAltA = 11;
-const inputEventToggleAltB = 12;
+const inputEventMoveCaret = 10;
+const inputEventUndoRedo = 11;
+const inputEventToggleAltA = 12;
+const inputEventToggleAltB = 13;
 
 let currentInputType = inputEventNoCategory;
 let ignoreSelectionChanges = false;
@@ -2089,6 +2142,7 @@ function inputOverrides(event) {
 			isArrowDownEvent = true;
 			break;
 	}
+	const isArrowEvent = isArrowLeftEvent || isArrowUpEvent || isArrowRightEvent || isArrowDownEvent;
 
 	if (event.altKey) {
 		altPressed = true;
@@ -2130,12 +2184,14 @@ function inputOverrides(event) {
 			} else if (arrowLeftPressed) {
 				event.preventDefault();
 				updateSelection();
+				updateCaretViewportPosition();
 				if (increaseShowingLevel()) {
 					scrollToMaintainCaretViewportPosition();
 				}
 			} else if (arrowRightPressed) {
 				event.preventDefault();
 				updateSelection();
+				updateCaretViewportPosition();
 				if (decreaseShowingLevel()) {
 					scrollToMaintainCaretViewportPosition();
 				}
@@ -2400,6 +2456,10 @@ function inputOverrides(event) {
 		}
 	}
 
+	if (newInputType === inputEventNoCategory && isArrowEvent) {
+		newInputType = inputEventMoveCaret;
+	}
+
 	// Check for change and decide whether to save Redo state
 	if (!savedRedo) {
 		if (currentInputType !== newInputType) {
@@ -2512,9 +2572,6 @@ function selectionChange(event) {
 			// sanitize will remove disallowed nodes and clean up empty ones
 			sanitizeNodes(firstNodeToSanitize, numNodesToSanitize);
 
-			// scroll with pasted text
-			scrollToMaintainCaretViewportPosition();
-
 			// update current selection
 			updateSelection();
 
@@ -2536,20 +2593,7 @@ function selectionChange(event) {
 		// clear current highlights
 		clearParagraphHighlights();
 
-		// update scroll position if needed
-		switch (currentInputType) {
-			case inputEventText:
-				scrollToMaintainCaretViewportPosition();
-				break;
-			case inputEventEnter:
-				scrollToMaintainCaretViewportPosition();
-				break;
-			case inputEventNoCategory:
-				break;
-			default:
-				break;
-		}
-		currentInputType = inputEventNoCategory;
+		// compare with previous selection
 		updateSelection();
 		const startChanged = previousSelectionStartElement !== currentSelection.startElement;
 		const endChanged = previousSelectionEndElement !== currentSelection.endElement;
@@ -2587,6 +2631,11 @@ function selectionChange(event) {
 
 		// apply relevant selected style
 		addParagraphHighlights();
+	}
+
+	// For most selection change events, we want to move to keep it in view:
+	if (currentInputType > inputEventNoCategory && currentInputType < inputEventUndoRedo) {
+		scrollToSelectedElementIfNeeded();
 	}
 
 	currentInputType = inputEventNoCategory;
