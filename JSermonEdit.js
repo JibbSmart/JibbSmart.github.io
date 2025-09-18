@@ -477,6 +477,62 @@ function findNodeAndOffset(inParent, inOffset) {
 	return null;
 }
 
+function splitAtOffset(inParent, inOffset) {
+	let offsetCounted = 0;
+	let childNode = inParent.firstChild;
+	while (childNode && childNode != inParent) {
+		while (childNode.firstChild) {
+			childNode = childNode.firstChild;
+		}
+		if (childNode.nodeType === Node.TEXT_NODE) {
+			lastTextNode = childNode;
+			offsetCounted += childNode.data.length;
+			if (offsetCounted >= inOffset) {
+				const indexAtOffset = childNode.data.length - (offsetCounted - inOffset);
+				// Copy this one so we can split it
+				let nodeCopy = childNode.cloneNode(true);
+				const beforeText = childNode.data.slice(0, indexAtOffset);
+				const afterText = childNode.data.slice(indexAtOffset, Infinity);
+				childNode.data = beforeText;
+				nodeCopy.data = afterText;
+				let copyChild = childNode;
+				let copyParent = childNode.parentNode;
+				let parentCopy = null;
+				while (copyChild && !isOrderableElement(copyChild)) {
+					parentCopy = copyParent.cloneNode(false);
+					let splitIndex = 0;
+					let childNodeWalker = copyParent.firstChild;
+					while (childNodeWalker && childNodeWalker !== copyChild) {
+						splitIndex++;
+						childNodeWalker = childNodeWalker.nextSibling;
+					}
+					parentCopy.append(nodeCopy);
+					while (copyParent.childNodes.length > splitIndex + 1) {
+						const movingNode = copyParent.childNodes[splitIndex + 1];
+						movingNode.remove();
+						parentCopy.append(movingNode);
+					}
+					copyChild = copyParent;
+					nodeCopy = parentCopy;
+					copyParent = copyParent.parentNode;
+				}
+
+				return parentCopy;
+			}
+		}
+		while (childNode !== inParent && !childNode.nextSibling) {
+			childNode = childNode.parentNode;
+		}
+		if (childNode === inParent) {
+			break;
+		}
+		childNode = childNode.nextSibling;
+	}
+
+	// went past end, but still useful to have last text node if there was one:
+	return null;
+}
+
 function copySelectedContent() {
 	// no selection
 	if (currentSelection.endNode === currentSelection.startNode && currentSelection.endOffset <= currentSelection.startOffset) {
@@ -2415,41 +2471,67 @@ function inputOverrides(event) {
 					}
 				}
 				let needsToClear = true;
-				if (!processedEnter && targetNode instanceof HTMLHeadingElement) {
-					if (!isSelection() && currentSelection.endOffset === currentSelection.endNode.textContent.length) {
-						needsToClear = false;
-						event.preventDefault();
-						newInputType = inputEventEnter;
-						saveStatesForUndoRedo();
-						savedRedo = true;
-						//if (currentSelection.type === "Range") {
-						//	currentSelection.deleteFromDocument();
-						//	if (currentSelectionStartOffset === 0) {
-						//		currentSelectionStartElement.appendChild(document.createElement("br"));
-						//	}
-						//	// TODO:
-						//	// 1. Make it handle deleting everything between start and end node -- including hidden stuff.
-						//	// 2. Refactor to its own function so I can use this on ANY typing when something's already selected, or DEL or BACKSPACE or CUT...
-						//	//      ... But NOT the "br" bit up there, which only applies here because we're starting a new paragraph. Needs preserving here.
-						//}
-						// New paragraph
+				if (!processedEnter) {
+					const isSelectionRange = isSelection();
+					event.preventDefault();
+					newInputType = inputEventEnter;
+					const offsetInElement = getOffsetInParentNode(currentSelection.endElement, currentSelection.endNode, currentSelection.endOffset);
+					let newNode = splitAtOffset(currentSelection.endElement, offsetInElement);
+					// TODO: split deleting / collapsing selection into another function?
+					if (isSelectionRange) {
+						const beforeOffset = getOffsetInParentNode(currentSelection.startElement, currentSelection.startNode, currentSelection.startOffset);
+						splitAtOffset(currentSelection.startElement, beforeOffset);
+						// remove all of the in-betweens
+						if (currentSelection.startElement !== currentSelection.endElement) {
+							let firstToDelete = currentSelection.startElement.nextSibling;
+							let isLastElement = false;
+							while (!isLastElement) {
+								isLastElement = firstToDelete === currentSelection.endElement;
+								const nextToDelete = firstToDelete.nextSibling;
+								firstToDelete.remove();
+								firstToDelete = nextToDelete;
+							}
+						}
+					}
+					let afterWordCount = 0;
+					if (newNode) {
+						calculateAndSetNodeWordCount(newNode);
+						afterWordCount = getNodeWordCount(newNode);
+					}
+					calculateAndSetNodeWordCount(targetNode);
+					const beforeWordCount = getNodeWordCount(targetNode);
+					if (beforeWordCount === 0) {
+						while (targetNode.firstChild) {
+							targetNode.removeChild(targetNode.lastChild);
+						}
+						targetNode.appendChild(document.createElement("br"));
+					}
+					if (targetNode instanceof HTMLHeadingElement) {
+						// don't use the copy straight-up -- do a new paragraph
 						const newParagraph = document.createElement("p");
-						newParagraph.classList.add("paragraph");
+						if (!newNode || afterWordCount === 0) {
+							newParagraph.appendChild(document.createElement("br"));
+						} else {
+							newParagraph.append(...newNode.childNodes);
+						}
+						targetNode.after(newParagraph);
+						newNode = newParagraph;
+					} else if (newNode && afterWordCount > 0) {
+						targetNode.after(newNode);
+					} else {
+						const newParagraph = targetNode.cloneNode(false);
 						newParagraph.appendChild(document.createElement("br"));
 						targetNode.after(newParagraph);
-						const newRange = document.createRange();
-						newRange.setStart(newParagraph, 0);
-						const newSelection = document.getSelection();
-						newSelection.removeAllRanges();
-						newSelection.addRange(newRange);
-					} else {
-						newInputType = inputEventEnter;
-						clearNodeWordCounters(targetNode);
+						newNode = newParagraph;
 					}
-				}
-				if (needsToClear) {
-					// wait, watch-out -- this node might get split! clear counters!
-					newInputType = inputEventEnter;
+
+					// Update selection:
+					const newRange = document.createRange();
+					newRange.setStart(newNode, 0);
+					const newSelection = document.getSelection();
+					newSelection.removeAllRanges();
+					newSelection.addRange(newRange);
+
 					clearNodeWordCounters(targetNode);
 				}
 			}
@@ -2597,6 +2679,22 @@ function selectionChange(event) {
 		updateSelection();
 		const startChanged = previousSelectionStartElement !== currentSelection.startElement;
 		const endChanged = previousSelectionEndElement !== currentSelection.endElement;
+		
+		// different events may require different clean-up
+		switch (currentInputType) {
+			case inputEventText:
+				break;
+			case inputEventEnter: // New bullet points don't keep "checked" status
+				const currentNodeLevel = getOrCalculateNodeLevel(currentSelection.startElement);
+				if (currentNodeLevel > pLevel) {
+					currentSelection.startElement.classList.remove("altB");
+				}
+				break;
+			case inputEventNoCategory:
+				break;
+			default:
+				break;
+		}
 		
 		let nodeForDelta = null;
 		let nodeDelta = 0;
