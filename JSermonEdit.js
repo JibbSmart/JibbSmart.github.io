@@ -492,7 +492,7 @@ function splitAtOffset(inParent, inOffset) {
 				// Copy this one so we can split it
 				let nodeCopy = childNode.cloneNode(true);
 				const beforeText = childNode.data.slice(0, indexAtOffset);
-				const afterText = childNode.data.slice(indexAtOffset, Infinity);
+				const afterText = childNode.data.slice(indexAtOffset);
 				childNode.data = beforeText;
 				nodeCopy.data = afterText;
 				let copyChild = childNode;
@@ -2671,6 +2671,9 @@ function selectionChange(event) {
 		const previousSelectionEndElement = currentSelection.endElement;
 		const previousSelectionEndNode = currentSelection.endNode;
 		const previousSelectionEndOffset = currentSelection.endOffset;
+		const wasRange = currentSelection.startOffset !== currentSelection.endOffset ||
+			currentSelection.startNode !== currentSelection.endNode &&
+			currentSelection.startElement !== currentSelection.endElement;
 
 		// clear current highlights
 		clearParagraphHighlights();
@@ -2679,18 +2682,41 @@ function selectionChange(event) {
 		updateSelection();
 		const startChanged = previousSelectionStartElement !== currentSelection.startElement;
 		const endChanged = previousSelectionEndElement !== currentSelection.endElement;
+		const isRange = currentSelection.startOffset !== currentSelection.endOffset ||
+			currentSelection.startNode !== currentSelection.endNode &&
+			currentSelection.startElement !== currentSelection.endElement;
 		
+		let bigChange = false;
 		// different events may require different clean-up
 		switch (currentInputType) {
-			case inputEventText:
-				break;
+		//	case inputEventText:
+		//		break;
 			case inputEventEnter: // New bullet points don't keep "checked" status
 				const currentNodeLevel = getOrCalculateNodeLevel(currentSelection.startElement);
 				if (currentNodeLevel > pLevel) {
 					currentSelection.startElement.classList.remove("altB");
 				}
 				break;
+			case inputEventText:
 			case inputEventNoCategory:
+				// Could be a change shoved in (thanks to mobile), so check for those:
+				if (!wasRange && !isRange && currentSelection.startOffset === previousSelectionStartOffset + 1 && !startChanged) {
+					if (currentSelection.startOffset === 1 && currentSelection.charBefore === "\u00A0") {
+						// Delete that first space
+						textUnderCaret = getStringIfTextNode(currentSelection.startNode);
+						if (textUnderCaret) {
+							currentSelection.startNode.data = currentSelection.startNode.data.slice(1);
+							ignoreSelectionChanges = true;
+							demoteNode(currentSelection.startElement);
+							matchContextListType(currentSelection.startElement);
+							currentSelection.startOffset = 0;
+							currentSelection.endOffset = 0;
+							restoreSelection();
+							ignoreSelectionChanges = false;
+							bigChange = true;
+						}
+					}
+				}
 				break;
 			default:
 				break;
@@ -2698,7 +2724,6 @@ function selectionChange(event) {
 		
 		let nodeForDelta = null;
 		let nodeDelta = 0;
-		let bigChange = false;
 		let targetNode;
 		for (targetNode of selectedFullyVisibleElements()) {
 			const wordCalc = calculateAndSetNodeWordCount(targetNode);
