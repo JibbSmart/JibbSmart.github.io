@@ -82,10 +82,10 @@ let isEditorBuiltInSession = false;
 let caretViewportX = -1;
 let caretViewportY = -1;
 
-let topScrollMargin = 60;
-let bottomScrollMargin = 60;
-let topScrollTrigger = 15;
-let bottomScrollTrigger = 15;
+let topScrollMargin = 100;
+let bottomScrollMargin = 100;
+let topScrollTrigger = 25;
+let bottomScrollTrigger = 25;
 
 const currentSelection = {};
 currentSelection.isValid = false;
@@ -237,17 +237,31 @@ function updateSelection() {
 	return currentSelection.startElement;
 }
 
-function restoreSelection() {
+function restoreSelection(pauseAndUnpauseUndo = false) {
 	if (currentSelection.startNode && currentSelection.startNode.isConnected && currentSelection.endNode && currentSelection.endNode.isConnected) {
+		if (pauseAndUnpauseUndo) {
+			pauseUndoUpdates();
+		}
 		const newRange = document.createRange();
 		newRange.setStart(currentSelection.startNode, currentSelection.startOffset);
 		newRange.setEnd(currentSelection.endNode, currentSelection.endOffset);
 		const newSelection = document.getSelection();
 		newSelection.removeAllRanges();
 		newSelection.addRange(newRange);
+		if (pauseAndUnpauseUndo) {
+			unpauseUndoUpdates();
+		}
 		return true;
 	}
 	return false;
+}
+
+function pauseUndoUpdates() {
+	userDoc.dataset.undoPaused = "true";
+}
+
+function unpauseUndoUpdates() {
+	userDoc.dataset.undoPaused = "";
 }
 
 function updateCaretViewportPosition() {
@@ -358,8 +372,6 @@ function scrollToSelectedElementIfNeeded() {
 
 const undoStack = new Array();
 const redoStack = new Array();
-const historyTypeComplete = 1;
-const historyTypePartial = 2;
 
 const inputEventNoCategory = 0;
 const inputEventText = 1;
@@ -377,38 +389,282 @@ const inputEventToggleAltA = 12;
 const inputEventToggleAltB = 13;
 
 let currentInputType = inputEventNoCategory;
-let ignoreSelectionChanges = false;
+let previousInputType = inputEventNoCategory;
 
-function getCompleteStateForUndoRedo() {
-	let currentNode;
-	let selectionStartIndex = -1;
-	let selectionEndIndex = -1;
-	let selectionStartOffset = getOffsetInParentNode(currentSelection.startElement, currentSelection.startNode, currentSelection.startOffset);
-	let selectionEndOffset = getOffsetInParentNode(currentSelection.endElement, currentSelection.endNode, currentSelection.endOffset);
-	let index = 0;
-	const copiedNodes = Array();
-	for (currentNode of allUserElements()) {
-		if (currentSelection.startElement === currentNode) {
-			selectionStartIndex = index;
-			selectionEndIndex = index;
-		} else if (currentSelection.endElement === currentNode) {
-			if (selectionStartIndex < 0) {
-				selectionStartIndex = index;
+let doingUndo = false;
+let doingRedo = false;
+let undoPaused = false;
+let needsNewUndo = true;
+let needsNewRedo = true;
+
+const nodeStatesRecordedForUndo = new Set();
+
+function finishUndo() {
+	needsNewUndo = true;
+	needsNewRedo = true;
+	nodeStatesRecordedForUndo.clear();
+}
+
+function undoMutations(mutationList) {
+	let wasSubstantial = false;
+	const numMutations = mutationList.length;
+	let mutationIdx = numMutations - 1;
+	for (; mutationIdx >= 0; mutationIdx--) {
+		const mutation = mutationList[mutationIdx];
+		if (mutation.type === "childList") {
+			wasSubstantial = true;
+			// remove the addeds...
+			for (addedNode of mutation.addedNodes) {
+				if (addedNode.parentNode === mutation.target) {
+					addedNode.remove();
+				}
 			}
-			selectionEndIndex = index;
+
+			// ...then add the removeds
+			if (mutation.previousSibling) {
+				mutation.previousSibling.after(...mutation.removedNodes);
+			} else if (mutation.nextSibling) {
+				mutation.nextSibling.before(...mutation.removedNodes);
+			} else {
+				mutation.target.append(...mutation.removedNodes);
+			}
+		} else if (mutation.type === "characterData") {
+			wasSubstantial = true;
+			mutation.target.data = mutation.oldValue;
+		} else if (mutation.attributeName) {
+			if (mutation.attributeName === "class") {
+				wasSubstantial = true;
+			}
+			if (mutation.oldValue) {
+				mutation.target.setAttribute(mutation.attributeName, mutation.oldValue);
+			} else {
+				mutation.target.removeAttribute(mutation.attributeName);
+			}
 		}
-		copiedNodes.push(currentNode.cloneNode(true));
-		index++;
 	}
 
-	return {
-		historyType: historyTypeComplete,
-		nodes: copiedNodes,
-		selectionStartIndex: selectionStartIndex,
-		selectionStartOffset: selectionStartOffset,
-		selectionEndIndex: selectionEndIndex,
-		selectionEndOffset: selectionEndOffset
-	};
+	return wasSubstantial;
+}
+
+function getAndPrepCurrentUndoRedoState(putInRedo = false, isSubstantial = true) {
+	if (putInRedo) {
+		// add to redo stack
+		if (needsNewRedo || redoStack.length === 0) {
+			const newRedo = {
+				mutations: new Array(),
+				selection: copyCurrentSelection()
+			};
+			redoStack.push(newRedo);
+			needsNewRedo = false;
+			return newRedo.mutations;
+		} else {
+			const topRedo = redoStack[redoStack.length - 1];
+			return topRedo.mutations;
+		}
+	} else {
+		// clear redo stack
+		if (!doingRedo && isSubstantial) {
+			redoStack.length = 0;
+		}
+		// add to undo stack
+		if (needsNewUndo || undoStack.length === 0) {
+			const newUndo = {
+				mutations: new Array(),
+				selection: copyCurrentSelection()
+			};
+			undoStack.push(newUndo);
+			needsNewUndo = false;
+			return newUndo.mutations;
+		} else {
+			const topUndo = undoStack[undoStack.length - 1];
+			return topUndo.mutations;
+		}
+	}
+}
+
+// Events on changes for undo/redo
+const mutationCallback = (mutationList, observer) => {
+	// Do any needed processing here
+
+	// Create undo/redo events as needed
+	for (const mutation of mutationList) {
+		// Get the info
+		if (!undoPaused && mutation.type === "childList") {
+			getAndPrepCurrentUndoRedoState(doingUndo).push(mutation);
+		} else if (mutation.type === "attributes") {
+			if (mutation.target === userDoc && mutation.attributeName === "data-undo") {
+				// This data attribute dictates writing changes to redo stack instead of undo stack
+				if (mutation.oldValue === "undo") {
+					doingUndo = false;
+					finishUndo();
+				} else {
+					doingUndo = true;
+					finishUndo();
+				}
+			} else if (mutation.target === userDoc && mutation.attributeName === "data-redo") {
+				// This data attribute dictates whether redo stack gets cleared on new changes
+				if (mutation.oldValue === "redo") {
+					doingRedo = false;
+					finishUndo();
+				} else {
+					doingRedo = true;
+					finishUndo();
+				}
+			} else if (mutation.target === userDoc && mutation.attributeName === "data-undo-paused") {
+				// This data attribute dictates whether undo/redo updates do anything at all
+				if (mutation.oldValue === "true") {
+					undoPaused = false;
+				} else {
+					undoPaused = true;
+				}
+			} else if (!undoPaused) {
+				if (mutation.attributeName === "data-selected" || mutation.attributeName === "data-selection-child") {
+					// skip
+				} else {
+					getAndPrepCurrentUndoRedoState(doingUndo, mutation.attributeName === "class").push(mutation);
+					nodeStatesRecordedForUndo.add(mutation.target);
+				}
+			}
+		} else if (!undoPaused && mutation.type === "characterData") {
+			if (!nodeStatesRecordedForUndo.has(mutation.target)) {
+				getAndPrepCurrentUndoRedoState(doingUndo).push(mutation);
+				nodeStatesRecordedForUndo.add(mutation.target);
+			}
+		}
+	}
+};
+
+function setupUndoRedoMutationObserver() {
+	const mutationObserver = new MutationObserver(mutationCallback);
+	mutationObserver.observe(userDoc, { attributes: true, attributeOldValue: true, characterData: true, characterDataOldValue: true, childList: true, subtree: true });
+	// Is there ever a reason to stop observing?
+	// mutationObserver.disconnect();
+}
+
+function diffWithCachedElements(cachedElements, cachedCopies) {
+	let currentNode;
+	let startDiffOffset = -1;
+	let endDiffOffset = -1;
+	const numCachedElements = cachedElements.length;
+	let firstDifferenceIndex = 0;
+	let firstDifference = null;
+	let differenceFound = false;
+	let lastDifferenceFound = false;
+	let undoDiv = null;
+	let firstDifferenceNode = null;
+	for (; firstDifferenceIndex < numCachedElements; firstDifferenceIndex++) {
+		firstDifference = findFirstDifference(cachedElements[firstDifferenceIndex], cachedCopies[firstDifferenceIndex]);
+		if (firstDifference.differenceFound) {
+			differenceFound = true;
+			firstDifferenceNode = cachedElements[firstDifferenceIndex];
+			break;
+		}
+	}
+	if (differenceFound) {
+		// find last difference
+		let lastDifference = null;
+		let lastDifferenceIndex = numCachedElements - 1;
+		for (; lastDifferenceIndex >= firstDifferenceIndex; lastDifferenceIndex--) {
+			if (lastDifference) {
+				if (lastDifferenceIndex !== firstDifferenceIndex) {
+					undoDiv.prepend(cachedCopies[lastDifferenceIndex]);
+				} else {
+					const finalCachedDifference = splitAtOffset(cachedCopies[firstDifferenceIndex], firstDifference.offset);
+					undoDiv.prepend(finalCachedDifference);
+					return undoDiv;
+				}
+			} else {
+				lastDifference = findLastDifference(cachedElements[lastDifferenceIndex], cachedCopies[lastDifferenceIndex]);
+				if (lastDifference.differenceFound) {
+					lastDifferenceFound = true;
+					undoDiv = document.createElement("div");
+					undoDiv.dataset.indexA = cachedStartIndex + firstDifferenceIndex;
+					undoDiv.dataset.offsetA = firstDifference.offset;
+					undoDiv.dataset.indexB = cachedStartIndex + lastDifferenceIndex;
+					undoDiv.dataset.offsetB = lastDifference.offset;
+					// split this one:
+					const lastCachedSplit = splitAtOffset(cachedCopies[lastDifferenceIndex], lastDifference.offset, false);
+					if (lastDifferenceIndex === firstDifferenceIndex) {
+						// and split at the beginning, too:
+						const finalCachedDifference = splitAtOffset(lastCachedSplit, firstDifference.offset);
+						undoDiv.append(finalCachedDifference);
+						return undoDiv;
+					} else {
+						undoDiv.append(lastCachedSplit);
+					}
+				} else {
+					lastDifference = null;
+				}
+			}
+		}
+	}
+
+	return null;
+}
+
+function doDiffUndoGetRedo(inUndoDiv) {
+	const indexA = inUndoDiv.dataset.indexA;
+	const offsetA = inUndoDiv.dataset.offsetA;
+	const indexB = inUndoDiv.dataset.indexB;
+	const offsetB = inUndoDiv.dataset.offsetB;
+
+	if (isNaN(indexA) || isNaN(offsetA) || isNaN(indexB) || isNaN(offsetB)) {
+		return null;
+	}
+
+	const numChildren = userDoc.children.length;
+	if (indexA >= numChildren || indexB >= numChildren) {
+		return null;
+	}
+
+	// do the diff!
+	const redoDiv = document.createElement("div");
+	redoDiv.dataset.indexA = indexA;
+	redoDiv.dataset.offsetA = offsetA;
+	redoDiv.dataset.indexB = indexB;
+	redoDiv.dataset.offsetB = offsetB;
+
+	if (indexA === indexB) {
+		const firstDifference = splitAtOffset(userDoc.children[indexA], offsetA);
+		if (firstDifference) {
+			const redoContent = splitAtOffset(firstDifference, offsetB, false);
+			if (redoContent) {
+				redoDiv.append(redoContent);
+			}
+			forceMergeElementWith(userDoc.children[indexA], inUndoDiv.firstChild);
+			forceMergeElementWith(userDoc.children[indexA], firstDifference);
+		} else {
+			return null;
+		}
+	} else {
+		const redoContent = splitAtOffset(userDoc.children[indexA], offsetA);
+		if (!redoContent) {
+			redoDiv.append(redoContent);
+		}
+		forceMergeElementWith(userDoc.children[indexA], inUndoDiv.firstChild);
+		let elementCounter = indexA + 1;
+		while (elementCounter < indexB) {
+			const replacingElement = userDoc.children[elementCounter];
+			if (inUndoDiv.firstChild !== inUndoDiv.lastChild) {
+				replacingElement.before(inUndoDiv.firstChild);
+				elementCounter++;
+			}
+			redoDiv.append(replacingElement);
+		}
+		while (inUndoDiv.firstChild !== inUndoDiv.lastChild) {
+			redoDiv.append(userDoc.children[elementCounter]);
+		}
+		// now we get to the last element of each
+		const lastDifference = splitAtOffset(userDoc.children[elementCounter], offsetB, false);
+		if (lastDifference) {
+			redoDiv.append(lastDifference);
+		}
+		userDoc.children[elementCounter].before(inUndoDiv.lastChild);
+		foreceMergeElementWith(userDoc.children[elementCounter], userDoc.children[elementCounter + 1]);
+		redoDiv.dataset.indexB = elementCounter;
+	}
+
+	return redoDiv;
 }
 
 function getOffsetInParentNode(inParent, inTarget, inOffset) {
@@ -477,60 +733,281 @@ function findNodeAndOffset(inParent, inOffset) {
 	return null;
 }
 
-function splitAtOffset(inParent, inOffset) {
+function splitAtOffset(inParent, inOffset, fromStart = true) {
 	let offsetCounted = 0;
-	let childNode = inParent.firstChild;
+	let childNode = fromStart ? inParent.firstChild : inParent.lastChild;
 	while (childNode && childNode != inParent) {
-		while (childNode.firstChild) {
-			childNode = childNode.firstChild;
+		if (fromStart) {
+			while (childNode.firstChild) {
+				childNode = childNode.firstChild;
+			}
+		} else {
+			while (childNode.lastChild) {
+				childNode = childNode.lastChild;
+			}
 		}
 		if (childNode.nodeType === Node.TEXT_NODE) {
 			lastTextNode = childNode;
 			offsetCounted += childNode.data.length;
 			if (offsetCounted >= inOffset) {
-				const indexAtOffset = childNode.data.length - (offsetCounted - inOffset);
+				const indexAtOffset = fromStart ? childNode.data.length - (offsetCounted - inOffset) : offsetCounted - inOffset;
 				// Copy this one so we can split it
-				let nodeCopy = childNode.cloneNode(true);
+				let nodeCopy = indexAtOffset > 0 ? childNode.cloneNode(true) : null;
 				const beforeText = childNode.data.slice(0, indexAtOffset);
 				const afterText = childNode.data.slice(indexAtOffset);
-				childNode.data = beforeText;
-				nodeCopy.data = afterText;
+				if (fromStart) {
+					childNode.data = beforeText;
+					if (nodeCopy) {
+						nodeCopy.data = afterText;
+					}
+				} else {
+					childNode.data = afterText;
+					if (nodeCopy) {
+						nodeCopy.data = beforeText;
+					}
+				}
 				let copyChild = childNode;
 				let copyParent = childNode.parentNode;
 				let parentCopy = null;
-				while (copyChild && !isOrderableElement(copyChild)) {
+				let childEmptied = beforeText.length === 0;
+				while (copyParent && copyChild && !isOrderableElement(copyChild)) {
 					parentCopy = copyParent.cloneNode(false);
 					let splitIndex = 0;
 					let childNodeWalker = copyParent.firstChild;
-					while (childNodeWalker && childNodeWalker !== copyChild) {
-						splitIndex++;
-						childNodeWalker = childNodeWalker.nextSibling;
-					}
-					parentCopy.append(nodeCopy);
-					while (copyParent.childNodes.length > splitIndex + 1) {
-						const movingNode = copyParent.childNodes[splitIndex + 1];
-						movingNode.remove();
-						parentCopy.append(movingNode);
+					if (fromStart) {
+						while (childNodeWalker && childNodeWalker !== copyChild) {
+							splitIndex++;
+							childNodeWalker = childNodeWalker.nextSibling;
+							childEmptied = false;
+						}
+						if (nodeCopy) {
+							parentCopy.append(nodeCopy);
+						}
+						while (copyParent.childNodes.length > splitIndex + 1) {
+							const movingNode = copyParent.childNodes[splitIndex + 1];
+							parentCopy.append(movingNode);
+						}
+					} else {
+						while (childNodeWalker && childNodeWalker !== copyChild) {
+							const movingNode = copyParent.firstChild;
+							parentCopy.append(movingNode);
+							childNodeWalker = copyParent.firstChild;
+						}
+						if (copyParent.firstChild) {
+							childEmptied = false;
+						}
+						if (nodeCopy) {
+							parentCopy.append(nodeCopy);
+						}
 					}
 					copyChild = copyParent;
 					nodeCopy = parentCopy;
 					copyParent = copyParent.parentNode;
+					if (childEmptied) {
+						copyParent.remove();
+					}
 				}
 
 				return parentCopy;
 			}
 		}
-		while (childNode !== inParent && !childNode.nextSibling) {
-			childNode = childNode.parentNode;
+		if (fromStart) {
+			while (childNode !== inParent && !childNode.nextSibling) {
+				childNode = childNode.parentNode;
+			}
+		} else {
+			while (childNode !== inParent && !childNode.previousSibling) {
+				childNode = childNode.parentNode;
+			}
 		}
 		if (childNode === inParent) {
 			break;
 		}
-		childNode = childNode.nextSibling;
+		childNode = fromStart ? childNode.nextSibling : childNode.previousSibling;
 	}
 
-	// went past end, but still useful to have last text node if there was one:
+	// went past end, didn't create anything new
 	return null;
+}
+
+function mergeElementWith(inNode, inAfter) {
+	if (inNode.nodeType === inAfter.nodeType && inNode.nodeName === inAfter.nodeName) {
+		if (inNode.nodeType === Node.TEXT_NODE) {
+			// TODO: should be a faster way to only convert the beginning spaces
+			inNode.data = inNode.data + inAfter.data.replace("\u00A0", " ");
+		} else {
+			const lastBefore = inNode.lastChild;
+			const firstAfter = inAfter.firstChild;
+			inNode.append(...inAfter.childNodes);
+			if (lastBefore && firstAfter) {
+				mergeElementWith(lastBefore, firstAfter);
+			}
+		}
+	}
+}
+
+function forceMergeElementWith(inNode, inAfter) {
+	if (inNode.nodeType !== inAfter.nodeType) {
+		if (inNode.nodeType === Node.TEXT_NODE) {
+			if (inAfter.firstChild) {
+				forceMergeElementWith(inNode, inAfter.firstChild);
+			}
+		} else {
+			if (inNode.firstChild) {
+				forceMergeElementWith(inNode.firstChild, inAfter);
+			}
+		}
+	} else if (inNode.nodeType !== Node.TEXT_NODE) {
+		const lastBefore = inNode.lastChild;
+		const firstAfter = inAfter.firstChild;
+		inNode.append(...inAfter.childNodes);
+		if (lastBefore && firstAfter) {
+			mergeElementWith(lastBefore, firstAfter);
+		}
+	} else {
+		inNode.data = inNode.data + inAfter.data.replace("\u00A0", " ");
+	}
+}
+
+function findFirstDifference(aNode, bNode, inOffset = 0) {
+	let offsetCounted = inOffset;
+	if (aNode.nodeType === bNode.nodeType && aNode.nodeName === bNode.nodeName) {
+		if (aNode.nodeType === Node.TEXT_NODE) {
+			let i = 0;
+			const aData = aNode.data;
+			const bData = bNode.data;
+			const differentLengths = aData.length !== bData.length;
+			const dataLength = Math.min(aData.length, bData.length);
+			for (; i < dataLength; i++) {
+				if (aData[i] !== bData[i]) {
+					return {
+						differenceFound: true,
+						offset: offsetCounted + i
+					};
+				}
+			}
+
+			const aHasSibling = aNode.nextSibling !== null;
+			const bHasSibling = bNode.nextSibling !== null;
+
+			if (differentLengths || aHasSibling !== bHasSibling) {
+				return {
+					differenceFound: true,
+					offset: offsetCounted + dataLength
+				};
+			}
+
+			if (aHasSibling) {
+				return findFirstDifference(aNode.nextSibling, bNode.nextSibling, offsetCounted + dataLength);
+			}
+		} else {
+			let aSibling = aNode.firstChild;
+			let bSibling = bNode.firstChild;
+			while (aSibling && bSibling && aSibling.nodeType === bSibling.nodeType && aSibling.nodeName === bSibling.nodeName) {
+				const firstDifference = findFirstDifference(aSibling, bSibling, offsetCounted);
+				if (firstDifference.differenceFound) {
+					return firstDifference;
+				}
+				offsetCounted = firstDifference.offset;
+
+				aSibling = aSibling.nextSibling;
+				bSibling = bSibling.nextSibling;
+
+				if ((aSibling && !bSibling) || (bSibling && !aSibling)) {
+					return {
+						differenceFound: true,
+						offset: offsetCounted
+					};
+				}
+			}
+
+			return {
+				differenceFound: false,
+				offset: offsetCounted
+			};
+		}
+	} else {
+		return {
+			differenceFound: true,
+			offset: offsetCounted
+		};
+	}
+	return {
+		differenceFound: false,
+		offset: offsetCounted
+	};
+}
+
+function findLastDifference(aNode, bNode, inOffset = 0) {
+	// as above but from the end
+	let offsetCounted = inOffset;
+	if (aNode.nodeType === bNode.nodeType && aNode.nodeName === bNode.nodeName) {
+		if (aNode.nodeType === Node.TEXT_NODE) {
+			let i = 0;
+			const aData = aNode.data;
+			const bData = bNode.data;
+			const aLength = aData.length;
+			const bLength = bData.length;
+			const differentLengths = aLength !== bLength;
+			const dataLength = Math.min(aLength, bLength);
+			for (; i < dataLength; i++) {
+				if (aData[aLength - 1 - i] !== bData[bLength - 1 - i]) {
+					return {
+						differenceFound: true,
+						offset: offsetCounted + i
+					};
+				}
+			}
+
+			const aHasSibling = aNode.previousSibling !== null;
+			const bHasSibling = bNode.previousSibling !== null;
+
+			if (differentLengths || aHasSibling !== bHasSibling) {
+				return {
+					differenceFound: true,
+					offset: offsetCounted + dataLength
+				};
+			}
+
+			if (aHasSibling) {
+				return findLastDifference(aNode.previousSibling, bNode.previousSibling, offsetCounted + dataLength);
+			}
+		} else {
+			let aSibling = aNode.lastChild;
+			let bSibling = bNode.lastChild;
+			while (aSibling && bSibling && aSibling.nodeType === bSibling.nodeType && aSibling.nodeName === bSibling.nodeName) {
+				const lastDifference = findLastDifference(aSibling, bSibling, offsetCounted);
+				if (lastDifference.differenceFound) {
+					return lastDifference;
+				}
+				offsetCounted = lastDifference.offset;
+
+				aSibling = aSibling.previousSibling;
+				bSibling = bSibling.previousSibling;
+
+				if ((aSibling && !bSibling) || (bSibling && !aSibling)) {
+					return {
+						differenceFound: true,
+						offset: offsetCounted
+					};
+				}
+			}
+
+			return {
+				differenceFound: false,
+				offset: offsetCounted
+			};
+		}
+	} else {
+		return {
+			differenceFound: true,
+			offset: offsetCounted
+		};
+	}
+	return {
+		differenceFound: false,
+		offset: offsetCounted
+	};
 }
 
 function copySelectedContent() {
@@ -637,135 +1114,46 @@ function deleteSelectedContent() {
 	// keep deleting until we get to the last node in the selection
 }
 
-function getContentChangeForUndoRedo() {
-	// Here's what we need to know:
-	// history 
-	// SelectionStartIndex;
-	// SelectionStartOffset;
-	// RemovedData
-	// InsertedData
-	// SelectionEndIndex;
-	// SelectionEndOffset;
-	
-}
-
-function needsCompleteRedo() {
-	if (undoStack.length > 0) {
-		// If there's already an incomplete state here, do nothing
-		const frontState = undoStack[undoStack.length - 1];
-		if (frontState && !frontState.afterState) {
-			return true;
-		}
-	}
-	return false;
-}
-
-function saveStateForUndo() {
-//	if (!needsCompleteRedo()) {
-//		const currentState = getCompleteStateForUndoRedo();
-//		undoStack.push({ beforeState: currentState });
-//		return true;
-//	}
-//	return false;
-}
-
-function saveStateForRedo() {
-//	clearRedo();
-//	const currentState = getCompleteStateForUndoRedo();
-//	const stackSize = undoStack.length;
-//	if (stackSize > 0) {
-//		undoStack[stackSize - 1].afterState = currentState;
-//		return true;
-//	}
-//	return false;
-}
-
-function saveStatesForUndoRedo() {
-	saveStateForUndo();
-	saveStateForRedo();
-}
-
-function setCompleteState(inState) {
-	if (!inState || !inState.nodes || isNaN(inState.selectionStartIndex) || isNaN(inState.selectionEndIndex)) {
-		return false;
-	}
-
-	// remove all children
-	while (userDoc.firstChild) {
-		userDoc.removeChild(userDoc.firstChild);
-	}
-
-	// replace with saved children
-	userDoc.append(...inState.nodes);
-
-	// restore selection
-	if (inState.selectionStartIndex < inState.nodes.length && inState.selectionEndIndex < inState.nodes.length) {
-		currentSelection.startElement = inState.nodes[inState.selectionStartIndex];
-		let foundNodeInfo = findNodeAndOffset(currentSelection.startElement, inState.selectionStartOffset);
-		if (inState.selectionStartOffset >= 0 && foundNodeInfo) {
-			currentSelection.startNode = foundInfo.leafNode;
-			currentSelection.startOffset = foundInfo.offset;
-		} else {
-			currentSelection.startNode = currentSelection.startElement;
-			currentSelection.startOffset = 0;
-		}
-		currentSelection.endElement = inState.nodes[inState.selectionEndIndex];
-		foundNodeInfo = findNodeAndOffset(currentSelection.endElement, inState.selectionEndOffset);
-		if (inState.selectionEndOffset >= 0 && foundNodeInfo) {
-			currentSelection.endNode = foundInfo.leafNode;
-			currentSelection.endOffset = foundInfo.offset;
-		} else {
-			currentSelection.endNode = currentSelection.endElement;
-			currentSelection.endOffset = 0;
-		}
-		ignoreSelectionChanges = true;
-		restoreSelection();
-		ignoreSelectionChanges = false;
-	}
-
-	return true;
-}
-
 function doUndo() {
 	if (undoStack.length > 0) {
-		const latestUndo = undoStack[undoStack.length - 1].beforeState;
-		let success = false;
-		if (latestUndo && latestUndo.historyType) {
-			switch (latestUndo.historyType) {
-				case historyTypeComplete:
-					success = setCompleteState(latestUndo);
-					break;
-				default:
-					break;
+		updateSelection();
+		userDoc.dataset.undo = "undo";
+		clearParagraphHighlights();
+		let latestUndo = undoStack.pop();
+		while (!undoMutations(latestUndo.mutations)) {
+			if (undoStack.length > 0) {
+				latestUndo = undoStack.pop();
+			} else {
+				break;
 			}
 		}
-		if (success) {
-			redoStack.push(latestUndo);
-			undoStack.length = undoStack.length - 1;
-			return true;
-		}
+		setCurrentSelection(latestUndo.selection);
+		restoreSelection();
+		delete userDoc.dataset.undo;
+		return true;
 	}
 	return false;
 }
 
 function doRedo() {
 	if (redoStack.length > 0) {
-		const latestRedo = redoStack[redoStack.length - 1].afterState;
-		let success = false;
-		if (latestRedo && latestRedo.historyType) {
-			switch (latestRedo.historyType) {
-				case historyTypeComplete:
-					success = setCompleteState(latestRedo);
-					break;
-				default:
-					break;
+		updateSelection();
+		userDoc.dataset.redo = "redo";
+		clearParagraphHighlights();
+		updateSelection();
+		getAndPrepCurrentUndoRedoState(false, false);
+		let latestRedo = redoStack.pop();
+		while (!undoMutations(latestRedo.mutations)) {
+			if (redoStack.length > 0) {
+				latestRedo = redoStack.pop();
+			} else {
+				break;
 			}
 		}
-		if (success) {
-			undoStack.push(latestRedo);
-			redoStack.length = redoStack.length - 1;
-			return true;
-		}
+		setCurrentSelection(latestRedo.selection);
+		restoreSelection();
+		delete userDoc.dataset.redo;
+		return true;
 	}
 	return false;
 }
@@ -1433,7 +1821,7 @@ function sanitizeNodes(startNode, numNodes) {
 				setNodeWordCount(targetNode, targetNodeWords);
 			}
 			if (targetNode.classList) {
-				targetNode.classList.remove("activeParagraph");
+				currentNode.removeAttribute("data-selected");
 			}
 		}
 
@@ -1942,9 +2330,7 @@ function increaseShowingLevel() {
 			}
 		}
 		// we've done all we can. Now:
-		ignoreSelectionChanges = true;
-		restoreSelection();
-		ignoreSelectionChanges = false;
+		restoreSelection(true);
 		addParagraphHighlights();
 	}
 
@@ -1990,18 +2376,14 @@ function moveUpSimple() {
 			previousElement.before(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
-			ignoreSelectionChanges = true;
-			restoreSelection();
-			ignoreSelectionChanges = false;
+			restoreSelection(true);
 			return true;
 		} else if (currentSelection.startElement !== userDoc.firstChild && !movingSection) {
 			// insert at beginning
 			userDoc.prepend(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
-			ignoreSelectionChanges = true;
-			restoreSelection();
-			ignoreSelectionChanges = false;
+			restoreSelection(true);
 			return true;
 		} else {
 			setCurrentSelection(beforeExpansion);
@@ -2031,18 +2413,14 @@ function moveDownSimple() {
 					lastRelevantElement.before(...selectedNodes());
 					countChildWords();
 					setCurrentSelection(beforeExpansion);
-					ignoreSelectionChanges = true;
-					restoreSelection();
-					ignoreSelectionChanges = false;
+					restoreSelection(true);
 					return true;
 				} else if (currentSelection.endElement !== userDoc.lastChild) {
 					// insert at end
 					userDoc.append(...selectedNodes());
 					countChildWords();
 					setCurrentSelection(beforeExpansion);
-					ignoreSelectionChanges = true;
-					restoreSelection();
-					ignoreSelectionChanges = false;
+					restoreSelection(true);
 					return true;
 				} else {
 					setCurrentSelection(beforeExpansion);
@@ -2052,9 +2430,7 @@ function moveDownSimple() {
 				userDoc.append(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
-				ignoreSelectionChanges = true;
-				restoreSelection();
-				ignoreSelectionChanges = false;
+				restoreSelection(true);
 				return true;
 			} else {
 				setCurrentSelection(beforeExpansion);
@@ -2065,18 +2441,14 @@ function moveDownSimple() {
 				nextElement.after(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
-				ignoreSelectionChanges = true;
-				restoreSelection();
-				ignoreSelectionChanges = false;
+				restoreSelection(true);
 				return true;
 			} else if (currentSelection.endElement !== userDoc.lastChild) {
 				// insert at end
 				userDoc.append(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
-				ignoreSelectionChanges = true;
-				restoreSelection();
-				ignoreSelectionChanges = false;
+				restoreSelection(true);
 				return true;
 			} else {
 				setCurrentSelection(beforeExpansion);
@@ -2101,9 +2473,7 @@ function moveUpSection() {
 			previousElement.before(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
-			ignoreSelectionChanges = true;
-			restoreSelection();
-			ignoreSelectionChanges = false;
+			restoreSelection(true);
 			return true;
 		} else {
 			setCurrentSelection(beforeExpansion);
@@ -2130,18 +2500,14 @@ function moveDownSection() {
 				lastSearch.sibling.before(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
-				ignoreSelectionChanges = true;
-				restoreSelection();
-				ignoreSelectionChanges = false;
+				restoreSelection(true);
 				return true;
 			} else if (currentSelection.endElement !== userDoc.lastChild) {
 				// insert at end
 				userDoc.append(...selectedNodes());
 				countChildWords();
 				setCurrentSelection(beforeExpansion);
-				ignoreSelectionChanges = true;
-				restoreSelection();
-				ignoreSelectionChanges = false;
+				restoreSelection(true);
 				return true;
 			} else {
 				setCurrentSelection(beforeExpansion);
@@ -2151,9 +2517,7 @@ function moveDownSection() {
 			userDoc.append(...selectedNodes());
 			countChildWords();
 			setCurrentSelection(beforeExpansion);
-			ignoreSelectionChanges = true;
-			restoreSelection();
-			ignoreSelectionChanges = false;
+			restoreSelection(true);
 			return true;
 		} else {
 			setCurrentSelection(beforeExpansion);
@@ -2172,9 +2536,6 @@ function inputOverrides(event) {
 		newInputType = inputEventText;
 		updateSelection();
 	}
-	let savedRedo = false;
-
-	//saveStateForUndo();
 
 	let isArrowLeftEvent = false;
 	let isArrowUpEvent = false;
@@ -2213,7 +2574,7 @@ function inputOverrides(event) {
 		if (isSingleElementSelection() && currentSelection.startElement) {
 			let targetNode;
 			for (targetNode of childElementsOf(currentSelection.startElement)) {
-				targetNode.classList.add("activeSection");
+				targetNode.dataset.selectionChild = "true";
 			}
 		}
 	}
@@ -2224,17 +2585,15 @@ function inputOverrides(event) {
 			if (arrowUpPressed) { // Move Section Up
 				event.preventDefault();
 				if (isSingleElementSelection()) {
+					finishUndo();
 					newInputType = inputEventMove;
-					saveStatesForUndoRedo();
-					savedRedo = true;
 					moveUpSection();
 				}
 			} else if (arrowDownPressed) { // Move Section Down
 				event.preventDefault();
 				if (isSingleElementSelection()) {
+					finishUndo();
 					newInputType = inputEventMove;
-					saveStatesForUndoRedo();
-					savedRedo = true;
 					moveDownSection();
 				}
 			} else if (arrowLeftPressed) {
@@ -2253,9 +2612,8 @@ function inputOverrides(event) {
 				}
 			} else if (event.key === "Enter") { // Toggle Alternative Style B
 				event.preventDefault();
+				finishUndo();
 				newInputType = inputEventToggleAltB;
-				saveStatesForUndoRedo();
-				savedRedo = true;
 				updateSelection();
 				let targetNode;
 				for (targetNode of selectedVisibleElements()) {
@@ -2266,79 +2624,65 @@ function inputOverrides(event) {
 			// Move shortcuts
 			if (arrowUpPressed) { // Move Up
 				event.preventDefault();
+				finishUndo();
 				newInputType = inputEventMove;
-				saveStatesForUndoRedo();
-				savedRedo = true;
 				moveUpSimple();
 			} else if (arrowDownPressed) { // Move Down
 				event.preventDefault();
+				finishUndo();
 				newInputType = inputEventMove;
-				saveStatesForUndoRedo();
-				savedRedo = true;
 				moveDownSimple();
 			} else if (arrowLeftPressed) { // Promote/Adjust
 				event.preventDefault();
+				finishUndo();
 				newInputType = inputEventPromote;
-				saveStatesForUndoRedo();
-				savedRedo = true;
 				recountHandled = true;
 				updateSelection();
 				const isSingle = isSingleElementSelection();
-				ignoreSelectionChanges = true;
 				promoteSelectedNodes();
 				if (isSingle) {
 					matchContextListType(currentSelection.startElement);
 				}
-				ignoreSelectionChanges = false;
 				countChildWords();
 			} else if (arrowRightPressed) { // Demote/Adjust
 				event.preventDefault();
+				finishUndo();
 				newInputType = inputEventPromote;
-				saveStatesForUndoRedo();
-				savedRedo = true;
 				recountHandled = true;
 				updateSelection();
 				const isSingle = isSingleElementSelection();
-				ignoreSelectionChanges = true;
 				demoteSelectedNodes();
 				if (isSingle) {
 					matchContextListType(currentSelection.startElement);
 				}
-				ignoreSelectionChanges = false;
 				countChildWords();
 			} else if (event.key === "h") { // Hide/Unhide
 				// work from end to beginning of selection, toggling hidden status
 				event.preventDefault();
+				finishUndo();
 				newInputType = inputEventHide;
-				saveStatesForUndoRedo();
-				savedRedo = true;
 				recountHandled = true;
 				updateSelection();
 				if (currentSelection.startElement && currentSelection.endElement) {
 					let needsRecount = false;
 					let targetNode;
-					ignoreSelectionChanges = true;
 					for (targetNode of selectedElementsReversed()) {
 						needsRecount = toggleHidden(targetNode) || needsRecount;
 					}
-					ignoreSelectionChanges = false;
 					if (needsRecount) {
 						countChildWords();
 					}
 				}
 			} else if (event.key === "Backspace") { // Remove
 				event.preventDefault();
+				finishUndo();
 				newInputType = inputEventRemove;
-				saveStatesForUndoRedo();
-				savedRedo = true;
 				updateSelection();
 				expandSelectionToIncludeHiddenChildren();
 				let targetNode;
-				ignoreSelectionChanges = true;
 				for (targetNode of selectedNodes()) {
 					targetNode.remove();
 				}
-				ignoreSelectionChanges = false;
 				// no need to restore previous selection, because that's goooone now, but let's reflect new selection:
 				// TODO: Probably not actually needed. The problem is the empty text is what's selected after delete.
 				// Fix that and then this will probably work automatically due to selection change.
@@ -2346,57 +2690,44 @@ function inputOverrides(event) {
 				//addParagraphHighlights();
 			} else if (event.key === "Enter") { // Toggle Alternative Style A
 				event.preventDefault();
+				finishUndo();
 				newInputType = inputEventToggleAltA;
-				saveStatesForUndoRedo();
-				savedRedo = true;
 				updateSelection();
 				let targetNode;
 				for (targetNode of selectedVisibleElements()) {
 					doToggleAltA(targetNode);
 				}
-			} else if (event.key === "s") { // Save with editor so it can be easily viewed elsewhere -- can only be "save as"
+			} else if (event.key === "s") { // Export to "other" format (if already "with editor", save just the content; if already just content, save "with editor")
 				event.preventDefault();
-				if (!(event.ctrlKey)) { // Save As
-					if (isEditorBuiltInSession) { // Save As with editor
-						saveWithEditor(true);
-					} else { // Save As just content
-						saveWithoutHighlights(true);
-					}
-				} else { // Export to "other" format (if already "with editor", save just the content; if already just content, save "with editor")
-					if (isEditorBuiltInSession) { // Export just content
-						saveWithoutHighlights(true);
-					} else { // Export with editor
-						saveWithEditor(true);
-					}
+				if (isEditorBuiltInSession) { // Export just content
+					saveWithoutHighlights(true);
+				} else { // Export with editor
+					saveWithEditor(true);
 				}
 			}
 		}
 	} else if (event.ctrlKey) {
-		if (event.key === "z") {
-			if (event.shiftKey) { // Redo
-				event.preventDefault();
-				newInputType = inputEventUndoRedo;
-		//		savedRedo = true;
-		//		ignoreSelectionChanges = true;
-		//		doRedo();
-		//		ignoreSelectionChanges = false;
-			} else { // Undo
-				event.preventDefault();
-				newInputType = inputEventUndoRedo;
-		//		if (redoStack.length === 0) {
-		//			saveStatesForUndoRedo();
-		//		}
-		//		savedRedo = true;
-		//		ignoreSelectionChanges = true;
-		//		doUndo();
-		//		ignoreSelectionChanges = false;
-			}
+		if (event.key === "z") { // Undo
+			event.preventDefault();
+			newInputType = inputEventUndoRedo;
+			doUndo();
+		} else if (event.key === "Z") { // Redo
+			event.preventDefault();
+			newInputType = inputEventUndoRedo;
+			doRedo();
 		} else if (event.key === "s") { // Save content to file
 			event.preventDefault();
 			if (isEditorBuiltInSession) { // If this editor is built into the doc, we don't want to risk over-writing with a "content-only" file, so force it to save with editor
 				saveWithEditor(false);
 			} else {
 				saveWithoutHighlights(false); // Otherwise, this just saves the content in the doc for opening from the editor
+			}
+		} else if (event.key === "S") { // Save As
+			event.preventDefault();
+			if (isEditorBuiltInSession) {
+				saveWithEditor(true);
+			} else {
+				saveWithoutHighlights(true);
 			}
 		} else if (event.key === "o") { // Open content file
 			event.preventDefault();
@@ -2408,8 +2739,6 @@ function inputOverrides(event) {
 			if (canDoTab()) {
 				event.preventDefault();
 				newInputType = inputEventPromote;
-				savedRedo = true;
-				saveStatesForUndoRedo();
 				doTab();
 			}
 		} else if (event.key === " ") { // space at beginning does "tab"
@@ -2419,8 +2748,6 @@ function inputOverrides(event) {
 					if (canDoTab()) {
 						event.preventDefault();
 						newInputType = inputEventPromote;
-						saveStatesForUndoRedo();
-						savedRedo = true;
 						doTab();
 					}
 				}
@@ -2432,8 +2759,6 @@ function inputOverrides(event) {
 				if (currentNodeLevel > pLevel) {
 					event.preventDefault();
 					newInputType = inputEventPromote;
-					saveStatesForUndoRedo();
-					savedRedo = true;
 					// promote by one
 					setListLevel(targetNode, currentNodeLevel - pLevel - 1);
 					matchContextListType(targetNode);
@@ -2453,8 +2778,6 @@ function inputOverrides(event) {
 					if (currentNodeLevel !== pLevel || targetNode.classList.contains("altA") || targetNode.classList.contains("altB")) {
 						event.preventDefault();
 						newInputType = inputEventPromote;
-						saveStatesForUndoRedo();
-						savedRedo = true;
 						if (currentNodeLevel === pLevel) { // clear alt modes
 							targetNode.classList.remove("altA");
 							targetNode.classList.remove("altB");
@@ -2463,9 +2786,7 @@ function inputOverrides(event) {
 							matchContextListType(currentSelection.startElement);
 						} else { // let's also convert headings to paragraphs as appropriate
 							convertNodeToType(targetNode, "P");
-							ignoreSelectionChanges = true;
-							restoreSelection();
-							ignoreSelectionChanges = false;
+							restoreSelection(true);
 						}
 						processedEnter = true;
 					}
@@ -2542,31 +2863,17 @@ function inputOverrides(event) {
 		newInputType = inputEventMoveCaret;
 	}
 
-	// Check for change and decide whether to save Redo state
-	if (!savedRedo) {
-		if (currentInputType !== newInputType) {
-			currentInputType = newInputType;
-			saveStatesForUndoRedo();
-		} else {
-			switch (currentInputType) {
-				case inputEventText:
-					if (event.key === " ") {
-						saveStatesForUndoRedo();
-					} else if (event.key === "Enter") {
-						saveStatesForUndoRedo();
-					} else {
-						// Otherwise, only save undo state (if it's needed)
-						saveStateForUndo();
-					}
-					break;
-				case inputEventNoCategory:
-					saveStatesForUndoRedo();
-					break;
-				default:
-					break;
+
+	if (newInputType !== inputEventNoCategory && newInputType !== previousInputType && newInputType !== inputEventUndoRedo) {
+		finishUndo();
+	} else {
+		if (newInputType === inputEventText) {
+			if (event.key === " ") {
+				finishUndo();
 			}
 		}
 	}
+	currentInputType = newInputType;
 }
 
 function keyRelease(inputEvent) {
@@ -2607,12 +2914,12 @@ function clearParagraphHighlights() {
 	let numNodesCleared = 0;
 	let currentNode;
 	for (currentNode of selectedElements()) {
-		currentNode.classList.remove("activeParagraph");
+		delete currentNode.dataset.selected;
 		numNodesCleared++;
 	}
 	if (isSingleElementSelection() && currentSelection.startElement) {
 		for (targetNode of childElementsOf(currentSelection.startElement)) {
-			targetNode.classList.remove("activeSection");
+			delete targetNode.dataset.selectionChild;
 		}
 	}
 	return numNodesCleared;
@@ -2621,11 +2928,11 @@ function clearParagraphHighlights() {
 function addParagraphHighlights() {
 	let currentNode;
 	for (currentNode of selectedElements()) {
-		currentNode.classList.add("activeParagraph");
+		currentNode.dataset.selected = "true";
 	}
 	if (isSingleElementSelection() && shiftPressed && altPressed && currentSelection.startElement) {
 		for (targetNode of childElementsOf(currentSelection.startElement)) {
-			targetNode.classList.add("activeSection");
+			targetNode.dataset.selectionChild = "true";
 		}
 	}
 }
@@ -2636,7 +2943,7 @@ function selectionChange(event) {
 	// 	- sanitising pasted content
 	//	- updating undo/redo stack
 
-	if (ignoreSelectionChanges) {
+	if (userDoc.dataset.undoPaused || doingUndo || doingRedo) {
 		return;
 	}
 
@@ -2701,21 +3008,22 @@ function selectionChange(event) {
 			case inputEventNoCategory:
 				// Could be a change shoved in (thanks to mobile), so check for those:
 				if (!wasRange && !isRange && currentSelection.startOffset === previousSelectionStartOffset + 1 && !startChanged) {
-					if (currentSelection.startOffset === 1 && currentSelection.charBefore === "\u00A0") {
+					if (currentSelection.startOffset === 1 && (currentSelection.charBefore === "\u00A0" || currentSelection.charBefore === " ")) {
 						// Delete that first space
 						textUnderCaret = getStringIfTextNode(currentSelection.startNode);
 						if (textUnderCaret) {
 							currentSelection.startNode.data = currentSelection.startNode.data.slice(1);
-							ignoreSelectionChanges = true;
 							demoteNode(currentSelection.startElement);
 							matchContextListType(currentSelection.startElement);
 							currentSelection.startOffset = 0;
 							currentSelection.endOffset = 0;
-							restoreSelection();
-							ignoreSelectionChanges = false;
+							restoreSelection(true);
 							bigChange = true;
 						}
 					}
+				}
+				if (currentInputType === inputEventNoCategory) {
+					finishUndo();
 				}
 				break;
 			default:
@@ -2761,6 +3069,7 @@ function selectionChange(event) {
 		scrollToSelectedElementIfNeeded();
 	}
 
+	previousInputType = currentInputType;
 	currentInputType = inputEventNoCategory;
 }
 
@@ -2820,6 +3129,8 @@ function load(event) {
 	} else {
 		document.title = titleNoFile;
 	}
+
+	setupUndoRedoMutationObserver();
 }
 
 function saveWithEditor(forceSaveAs) {
@@ -2959,6 +3270,9 @@ async function openFile() {
 		// Even if we were an EditorBuiltInSession, we've now explicitly opened a Content file, so we're not anymore:
 		isEditorBuiltInSession = false;
 	}
+
+	undoStack.length = 0;
+	redoStack.length = 0;
 }
 
 function onScroll(event) {

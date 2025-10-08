@@ -236,13 +236,13 @@ body {
 	opacity: 0.5;
 }
 
-#userDoc .activeSection {
+#userDoc [data-selection-child="true"] {
 	border-left-style: solid;
 	border-left-width: thick;
 	border-left-color: #CCCCCC;
 }
 
-#userDoc .activeParagraph {
+#userDoc [data-selected="true"] {
 	border-left-style: solid;
 	border-left-width: thick;
 	border-left-color: #33AAEE;
@@ -265,6 +265,23 @@ body {
 	margin-top: 10px;
 	margin-bottom: -10px;
 	/*transition: visibility 0s 0.25s, opacity 0.125s 0s, height 0.125s 0.125s, margin 0.125s 0.125s;*/
+}
+
+#undoStack {
+	float: right;
+	position: fixed;
+	top: 0px;
+	right: 0px;
+	width: 200px;
+	background-color: #ffeeaa;
+}
+#redoStack {
+	float: right;
+	position: fixed;
+	bottom: 0px;
+	right: 0px;
+	width: 200px;
+	background-color: #aaeeff;
 }
 
 /* Adapt to smaller screens */
