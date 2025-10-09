@@ -1821,7 +1821,7 @@ function sanitizeNodes(startNode, numNodes) {
 				setNodeWordCount(targetNode, targetNodeWords);
 			}
 			if (targetNode.classList) {
-				currentNode.removeAttribute("data-selected");
+				delete targetNode.dataset.selected;
 			}
 		}
 
@@ -2904,7 +2904,7 @@ function keyRelease(inputEvent) {
 		if (isSingleElementSelection() && currentSelection.startElement) {
 			let targetNode;
 			for (targetNode of childElementsOf(currentSelection.startElement)) {
-				targetNode.classList.remove("activeSection");
+				delete targetNode.dataset.selectionChild;
 			}
 		}
 	}
