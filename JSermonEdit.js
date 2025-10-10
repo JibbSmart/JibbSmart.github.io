@@ -78,6 +78,7 @@ const savedWithEditorTitle = "Editor Included";
 const titleNoFile = "JSermonEdit";
 const titleTail = " - " + titleNoFile;
 let isEditorBuiltInSession = false;
+let defaultContent = "";
 
 let caretViewportX = -1;
 let caretViewportY = -1;
@@ -261,7 +262,7 @@ function pauseUndoUpdates() {
 }
 
 function unpauseUndoUpdates() {
-	userDoc.dataset.undoPaused = "";
+	delete userDoc.dataset.undoPaused;
 }
 
 function updateCaretViewportPosition() {
@@ -534,11 +535,14 @@ const mutationCallback = (mutationList, observer) => {
 	}
 };
 
-function setupUndoRedoMutationObserver() {
-	const mutationObserver = new MutationObserver(mutationCallback);
+const mutationObserver = new MutationObserver(mutationCallback);
+
+function startUndoRedoObserver() {
 	mutationObserver.observe(userDoc, { attributes: true, attributeOldValue: true, characterData: true, characterDataOldValue: true, childList: true, subtree: true });
-	// Is there ever a reason to stop observing?
-	// mutationObserver.disconnect();
+}
+
+function stopUndoRedoObserver() {
+	mutationObserver.disconnect();
 }
 
 function diffWithCachedElements(cachedElements, cachedCopies) {
@@ -1238,11 +1242,18 @@ function calculateAndSetNodeWordCount(inNode) {
 		};
 	}
 	const newNodeWords = countNodeWords(inNode);
-	inNode.dataset.nodeWords = newNodeWords;
-	return {
-		hadValidData: true,
-		deltaWords: newNodeWords - nodeWords
-	};
+	if (nodeWords === newNodeWords) {
+		return {
+			hadValidData: true,
+			deltaWords: 0
+		};
+	} else {
+		inNode.dataset.nodeWords = newNodeWords;
+		return {
+			hadValidData: true,
+			deltaWords: newNodeWords - nodeWords
+		};
+	}
 }
 
 function setNodeWordCount(inNode, inWordCount) {
@@ -1257,16 +1268,18 @@ function getNodeChildWordCount(inNode) {
 	return nodeChildWords;
 }
 
-function setNodeChildWordCount(inNode, inWordCount) {
+function setNodeChildWordCount(inNode, inWordCount, isHeading = true) {
 	inNode.dataset.childWords = inWordCount;
-	if (inWordCount) {
-		if (inWordCount === 1) {
-			inNode.dataset.wordDisplay = "(1 word)";
+	if (isHeading) {
+		if (inWordCount) {
+			if (inWordCount === 1) {
+				inNode.dataset.wordDisplay = "(1 word)";
+			} else {
+				inNode.dataset.wordDisplay = "(" + inWordCount + " words)";
+			}
 		} else {
-			inNode.dataset.wordDisplay = "(" + inWordCount + " words)";
+			delete inNode.dataset.wordDisplay;
 		}
-	} else {
-		delete inNode.dataset.wordDisplay;
 	}
 }
 
@@ -1552,7 +1565,7 @@ function updateParentNodeChildWords(inNode, delta, stopAtHiddenParent = false) {
 				return false;
 			}
 
-			setNodeChildWordCount(currentNode, childWords + delta);
+			setNodeChildWordCount(currentNode, childWords + delta, thisNodeLevel < pLevel);
 			if (stopAtHiddenParent && currentNode.classList.contains("hidden")) {
 				return true;
 			}
@@ -1593,7 +1606,7 @@ function countChildWords() {
 		let numCountedForThisLevel = 0;
 		justChildren.forEach((count) => numCountedForThisLevel += count);
 
-		setNodeChildWordCount(currentChild, numCountedForThisLevel);
+		setNodeChildWordCount(currentChild, numCountedForThisLevel, thisNodeLevel < pLevel);
 
 		numCountedForThisLevel += numWords;
 		if (currentChild.classList && currentChild.classList.contains("hidden")) {
@@ -2704,6 +2717,9 @@ function inputOverrides(event) {
 				} else { // Export with editor
 					saveWithEditor(true);
 				}
+			} else if (event.key === "n") { // New session
+				event.preventDefault();
+				newSession();
 			}
 		}
 	} else if (event.ctrlKey) {
@@ -3083,6 +3099,20 @@ function pasting(event) {
 	numNodesPastingInto = clearParagraphHighlights();
 }
 
+function newSession() {
+	stopUndoRedoObserver();
+
+	userDoc.innerHTML = defaultContent;
+	isEditorBuiltInSession = false;
+	currentFileName = "";
+	document.title = titleNoFile;
+	currentFileHandle = null;
+	undoStack.length = 0;
+	redoStack.length = 0;
+
+	startUndoRedoObserver();
+}
+
 function saveSession() {
 	clearParagraphHighlights();
 	const sessionKey = currentFileName ? currentFileName : "lastSession";
@@ -3091,6 +3121,7 @@ function saveSession() {
 }
 
 function loadSession() {
+	defaultContent = userDoc.innerHTML;
 	let allowLastSessionFallback = true;
 	if (isEditorBuiltInSession) {
 		// If this file is content+editor, then we want to avoid overriding content unless we are sure it's relevant to this file.
@@ -3130,7 +3161,7 @@ function load(event) {
 		document.title = titleNoFile;
 	}
 
-	setupUndoRedoMutationObserver();
+	startUndoRedoObserver();
 }
 
 function saveWithEditor(forceSaveAs) {
