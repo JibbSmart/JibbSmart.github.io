@@ -756,24 +756,27 @@ function splitAtOffset(inParent, inOffset, fromStart = true) {
 			if (offsetCounted >= inOffset) {
 				const indexAtOffset = fromStart ? childNode.data.length - (offsetCounted - inOffset) : offsetCounted - inOffset;
 				// Copy this one so we can split it
-				let nodeCopy = indexAtOffset > 0 ? childNode.cloneNode(true) : null;
 				const beforeText = childNode.data.slice(0, indexAtOffset);
 				const afterText = childNode.data.slice(indexAtOffset);
+				let nodeCopy = null;
 				if (fromStart) {
-					childNode.data = beforeText;
-					if (nodeCopy) {
+					if (afterText.length) {
+						nodeCopy = childNode.cloneNode(true);
 						nodeCopy.data = afterText;
 					}
+					childNode.data = beforeText;
 				} else {
-					childNode.data = afterText;
-					if (nodeCopy) {
+					if (beforeText.length) {
+						nodeCopy = childNode.cloneNode(true);
 						nodeCopy.data = beforeText;
 					}
+					childNode.data = afterText;
 				}
 				let copyChild = childNode;
 				let copyParent = childNode.parentNode;
 				let parentCopy = null;
-				let childEmptied = beforeText.length === 0;
+				let childEmptied = childNode.data.length === 0;
+				let parentEmptied = childEmptied;
 				while (copyParent && copyChild && !isOrderableElement(copyChild)) {
 					parentCopy = copyParent.cloneNode(false);
 					let splitIndex = 0;
@@ -782,7 +785,7 @@ function splitAtOffset(inParent, inOffset, fromStart = true) {
 						while (childNodeWalker && childNodeWalker !== copyChild) {
 							splitIndex++;
 							childNodeWalker = childNodeWalker.nextSibling;
-							childEmptied = false;
+							parentEmptied = false;
 						}
 						if (nodeCopy) {
 							parentCopy.append(nodeCopy);
@@ -798,18 +801,30 @@ function splitAtOffset(inParent, inOffset, fromStart = true) {
 							childNodeWalker = copyParent.firstChild;
 						}
 						if (copyParent.firstChild) {
-							childEmptied = false;
+							parentEmptied = false;
 						}
 						if (nodeCopy) {
 							parentCopy.append(nodeCopy);
 						}
 					}
+					if (childEmptied) {
+						copyChild.remove();
+						if (parentEmptied) {
+							if (isOrderableElement(copyParent)) {
+								// We don't remove empty orderables.
+								copyParent.appendChild(document.createElement("br"));
+								return parentCopy;
+							} else {
+								// Remove this node on the next loop
+								childEmptied = true;
+							}
+						} else {
+							childEmptied = false;
+						}
+					}
 					copyChild = copyParent;
 					nodeCopy = parentCopy;
 					copyParent = copyParent.parentNode;
-					if (childEmptied) {
-						copyParent.remove();
-					}
 				}
 
 				return parentCopy;
@@ -2837,12 +2852,6 @@ function inputOverrides(event) {
 					}
 					calculateAndSetNodeWordCount(targetNode);
 					const beforeWordCount = getNodeWordCount(targetNode);
-					if (beforeWordCount === 0) {
-						while (targetNode.firstChild) {
-							targetNode.removeChild(targetNode.lastChild);
-						}
-						targetNode.appendChild(document.createElement("br"));
-					}
 					if (targetNode instanceof HTMLHeadingElement) {
 						// don't use the copy straight-up -- do a new paragraph
 						const newParagraph = document.createElement("p");
@@ -2869,7 +2878,7 @@ function inputOverrides(event) {
 					newSelection.removeAllRanges();
 					newSelection.addRange(newRange);
 
-					clearNodeWordCounters(targetNode);
+					countChildWords();
 				}
 			}
 		}
