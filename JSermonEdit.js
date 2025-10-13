@@ -77,6 +77,7 @@ let currentFileName = "";
 const savedWithEditorTitle = "Editor Included";
 const titleNoFile = "JSermonEdit";
 const titleTail = " - " + titleNoFile;
+const editorTitleTail = " - " + savedWithEditorTitle;
 let isEditorBuiltInSession = false;
 let defaultContent = "";
 
@@ -674,7 +675,7 @@ function doDiffUndoGetRedo(inUndoDiv) {
 function getOffsetInParentNode(inParent, inTarget, inOffset) {
 	let offsetCounted = 0;
 	let childNode = inParent;
-	while (childNode && childNode != inTarget) {
+	while (childNode) {
 		while (childNode.firstChild) {
 			childNode = childNode.firstChild;
 		}
@@ -3165,7 +3166,7 @@ function load(event) {
 	if (loadSession() && !isEditorBuiltInSession) {
 		document.title = "Continuing last session" + titleTail;
 	} else if (isEditorBuiltInSession && currentFileName) {
-		document.title = currentFileName;
+		document.title = currentFileName + editorTitleTail;
 	} else {
 		document.title = titleNoFile;
 	}
@@ -3237,7 +3238,11 @@ async function saveFile(fileContent, isSimpleSave, saveDescription) {
 		// Simple / normal saves update the document Title to show THIS is the file we are working on
 		currentFileHandle = fileHandle;
 		if (fileName) {
-			document.title = fileName + titleTail;
+			if (isEditorBuiltInSession) {
+				document.title = fileName + editorTitleTail;
+			} else {
+				document.title = fileName + titleTail;
+			}
 		}
 	}
 }
@@ -3296,13 +3301,14 @@ async function openFile() {
 		// That's fine, we can sanitize it, but don't want to make it easy to then overwrite this file.
 		// So prevent simple save and update title to reflect that this content was modified to be included.
 		currentFileHandle = null;
-		document.title = "Imported content from " + fileName;
 		if (foundEditorBuildInNodes) {
 			// Even if we weren't an EditorBuiltInSession, we've now attempted to open one, so consider this such a session to reduce risk of overwriting with a content file.
 			isEditorBuiltInSession = true;
+			document.title = "Imported content from " + fileName + editorTitleTail;
 		} else {
 			// Definitely over-engineered this, but let's stick with it for now.
 			isEditorBuiltInSession = false;
+			document.title = "Imported content from " + fileName + titleTail;
 		}
 	} else {
 		currentFileHandle = fileHandle;
