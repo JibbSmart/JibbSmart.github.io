@@ -3378,6 +3378,9 @@ function load(event) {
 }
 
 function saveWithEditor(forceSaveAs) {
+	if (!currentFileHandle) {
+		isEditorBuiltInSession = true;
+	}
 	clearParagraphHighlights();
 	const currentTitle = document.title;
 	document.title = savedWithEditorTitle; // This lets us know on OPEN not to override with latest session data unless it's associated with this file specifically
@@ -3437,8 +3440,8 @@ async function saveFile(fileContent, isSimpleSave, saveDescription) {
 		}
 	}
 
-	if (isSimpleSave) {
-		// Simple / normal saves update the document Title to show THIS is the file we are working on
+	if (isSimpleSave || !currentFileHandle) {
+		// Simple / normal or Save As / Export when there's no base save updates the document Title to show THIS is the file we are working on
 		currentFileHandle = fileHandle;
 		if (fileName) {
 			if (isEditorBuiltInSession) {
@@ -3486,7 +3489,7 @@ async function openFile() {
 		if (!currentNode.nodeName || !safeContentNodeTypes.has(currentNode.nodeName)) {
 			foundBadNodes = true;
 			if (currentNode.nodeName === "DIV" && currentNode.id === "userDoc") {
-				foundEditorBuildInNodes = true;
+				foundEditorBuiltInNodes = true;
 				currentNode.after(...currentNode.childNodes);
 				// Pull these poor buggers out
 			}
@@ -3501,7 +3504,7 @@ async function openFile() {
 	template.remove();
 	sanitizedTemplate.remove();
 	if (foundBadNodes) {
-		if (foundEditorBuildInNodes) {
+		if (foundEditorBuiltInNodes) {
 			currentFileHandle = fileHandle;
 			// Even if we weren't an EditorBuiltInSession, we've now attempted to open one, so consider this such a session to reduce risk of overwriting with a content file.
 			isEditorBuiltInSession = true;
