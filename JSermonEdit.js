@@ -258,6 +258,87 @@ function restoreSelection(pauseAndUnpauseUndo = false) {
 	return false;
 }
 
+function setSelectionFromMutatedNodes() {
+	let earliestNode = null;
+	let earliestOffset = 0;
+	let latestNode = null;
+	let latestOffset = 0;
+	for (const [node, selection] of nodesAndOffsetsMutatedForSelection) {
+		if (!node.isConnected) {
+			continue;
+		}
+
+		if (!earliestNode) {
+			earliestNode = node;
+			earliestOffset = selection.start;
+		} else {
+			const relativePosition = earliestNode.compareDocumentPosition(node);
+			if ((relativePosition & Node.DOCUMENT_POSITION_CONTAINED_BY) | (relativePosition & Node.DOCUMENT_POSITION_CONTAINS)) {
+				// should share a common parent
+				const earliestOrderable = getOrderableParent(earliestNode);
+				const newOrderable = getOrderableParent(node);
+				const earliestOffsetInOrderable = getOffsetInParentNode(earliestOrderable, earliestNode, earliestOffset);
+				const newOffsetInOrderable = getOffsetInParentNode(newOrderable, node, selection.start);
+				if (newOffsetInOrderable < earliestOffsetInOrderable) {
+					earliestNode = node;
+					earliestOffset = selection.start;
+				} else if (newOffsetInOrderable === earliestOffsetInOrderable) {
+					// favour more granular selection
+					if (relativePosition & Node.DOCUMENT_POSITION_CONTAINED_BY) {
+						earliestNode = node;
+						earliestOffset = selection.start;
+					}
+				}
+			} else if (relativePosition & Node.DOCUMENT_POSITION_PRECEDING) {
+				// new earliest!
+				earliestNode = node;
+				earliestOffset = selection.start;
+			}
+		}
+
+		if (!latestNode) {
+			latestNode = node;
+			latestOffset = selection.end;
+		} else {
+			const relativePosition = latestNode.compareDocumentPosition(node);
+			if ((relativePosition & Node.DOCUMENT_POSITION_CONTAINED_BY) | (relativePosition & Node.DOCUMENT_POSITION_CONTAINS)) {
+				// should share a common parent
+				const latestOrderable = getOrderableParent(latestNode);
+				const newOrderable = getOrderableParent(node);
+				const latestOffsetInOrderable = getOffsetInParentNode(latestOrderable, latestNode, latestOffset);
+				const newOffsetInOrderable = getOffsetInParentNode(newOrderable, node, selection.end);
+				if (newOffsetInOrderable > latestOffsetInOrderable) {
+					latestNode = node;
+					latestOffset = selection.end;
+				} else if (newOffsetInOrderable === latestOffsetInOrderable) {
+					// favour more granular selection
+					if (relativePosition & Node.DOCUMENT_POSITION_CONTAINED_BY) {
+						latestNode = node;
+						latestOffset = selection.end;
+					}
+				}
+			} else if (relativePosition & Node.DOCUMENT_POSITION_FOLLOWING) {
+				// new latest!
+				latestNode = node;
+				latestOffset = selection.end;
+			}
+		}
+	}
+
+	if (earliestNode && latestNode) {
+		const newRange = document.createRange();
+		newRange.setStart(earliestNode, earliestOffset);
+		newRange.setEnd(latestNode, latestOffset);
+		const newSelection = document.getSelection();
+		newSelection.removeAllRanges();
+		newSelection.addRange(newRange);
+	}
+
+	updateSelection();
+	updateCaretViewportPosition();
+	scrollToSelectedElementIfNeeded();
+}
+
 function pauseUndoUpdates() {
 	userDoc.dataset.undoPaused = "true";
 }
@@ -400,6 +481,7 @@ let needsNewUndo = true;
 let needsNewRedo = true;
 
 const nodeStatesRecordedForUndo = new Set();
+const nodesAndOffsetsMutatedForSelection = new Map();
 
 function finishUndo() {
 	needsNewUndo = true;
@@ -415,27 +497,131 @@ function undoMutations(mutationList) {
 		const mutation = mutationList[mutationIdx];
 		if (mutation.type === "childList") {
 			wasSubstantial = true;
+			let nodeBeforeRemove = null;
+			let nodeAfterRemove = null;
 			// remove the addeds...
 			for (addedNode of mutation.addedNodes) {
 				if (addedNode.parentNode === mutation.target) {
+					if (!nodeBeforeRemove || nodeBeforeRemove === addedNode) {
+						nodeBeforeRemove = addedNode.previousSibling;
+					}
+					if (!nodeAfterRemove || nodeAfterRemove === addedNode) {
+						nodeAfterRemove = addedNode.nextSibling;
+					}
 					addedNode.remove();
 				}
 			}
 
 			// ...then add the removeds
-			if (mutation.previousSibling) {
-				mutation.previousSibling.after(...mutation.removedNodes);
-			} else if (mutation.nextSibling) {
-				mutation.nextSibling.before(...mutation.removedNodes);
-			} else {
-				mutation.target.append(...mutation.removedNodes);
+			if (mutation.removedNodes.length > 0) {
+				if (mutation.previousSibling) {
+					mutation.previousSibling.after(...mutation.removedNodes);
+				} else if (mutation.nextSibling) {
+					mutation.nextSibling.before(...mutation.removedNodes);
+				} else {
+					mutation.target.append(...mutation.removedNodes);
+				}
+			}
+
+			if (mutation.removedNodes.length > 0) {
+				const numRemovedNodes = mutation.removedNodes.length;
+				// we added nodes! These should be our selection!
+				let foundNodeForSelection = findNodeAndOffset(mutation.removedNodes[0], 0);
+				if (foundNodeForSelection && foundNodeForSelection.leafNode) {
+					let nodeSelection = nodesAndOffsetsMutatedForSelection.get(foundNodeForSelection.leafNode);
+					if (nodeSelection) {
+						nodeSelection.start = Math.min(nodeSelection.start, foundNodeForSelection.offset);
+					} else {
+						nodesAndOffsetsMutatedForSelection.set(foundNodeForSelection.leafNode, {start: foundNodeForSelection.offset, end: foundNodeForSelection.offset});
+					}
+				}
+				foundNodeForSelection = findNodeAndOffset(mutation.removedNodes[numRemovedNodes-1], Infinity);
+				if (foundNodeForSelection && foundNodeForSelection.leafNode) {
+					nodeSelection = nodesAndOffsetsMutatedForSelection.get(foundNodeForSelection.leafNode);
+					if (nodeSelection) {
+						nodeSelection.end = Math.max(nodeSelection.end, foundNodeForSelection.offset);
+					} else {
+						nodesAndOffsetsMutatedForSelection.set(startNodeForSelection.leafNode, {start: foundNodeForSelection.offset, end: foundNodeForSelection.offset});
+					}
+				}
+			} else if (nodeBeforeRemove) {
+				let foundNodeForSelection = findNodeAndOffset(nodeBeforeRemove, Infinity);
+				let foundNode, foundOffset;
+				if (foundNodeForSelection && foundNodeForSelection.leafNode) {
+					foundNode = foundNodeForSelection.leafNode;
+					foundOffset = foundNodeForSelection.offset;
+				} else {
+					foundNode = nodeBeforeRemove;
+					foundOffset = 0;
+				}
+				let nodeSelection = nodesAndOffsetsMutatedForSelection.get(foundNode);
+				if (nodeSelection) {
+					nodeSelection.start = Math.min(nodeSelection.start, foundOffset);
+				} else {
+					nodesAndOffsetsMutatedForSelection.set(foundNode, {start: foundOffset, end: foundOffset});
+				}
+			} else if (nodeAfterRemove) {
+				let foundNodeForSelection = findNodeAndOffset(nodeAfterRemove, 0);
+				let foundNode, foundOffset;
+				if (foundNodeForSelection && foundNodeForSelection.leafNode) {
+					foundNode = foundNodeForSelection.leafNode;
+					foundOffset = foundNodeForSelection.offset;
+				} else {
+					foundNode = nodeAfterRemove;
+					foundOffset = 0;
+				}
+				let nodeSelection = nodesAndOffsetsMutatedForSelection.get(foundNode);
+				if (nodeSelection) {
+					nodeSelection.start = Math.min(nodeSelection.start, foundOffset);
+				} else {
+					nodesAndOffsetsMutatedForSelection.set(foundNode, {start: foundOffset, end: foundOffset});
+				}
 			}
 		} else if (mutation.type === "characterData") {
 			wasSubstantial = true;
+			// Find first and last difference
+			let firstDifferenceIndex;
+			const oldString = mutation.target.data;
+			const newString = mutation.oldValue;
+			const oldLength = oldString.length;
+			const newLength = newString.length;
+			const minLength = Math.min(oldLength, newLength);
+			const maxLength = Math.max(oldLength, newLength);
+			for (firstDifferenceIndex = 0; firstDifferenceIndex < minLength; ++firstDifferenceIndex) {
+				if (oldString[firstDifferenceIndex] !== newString[firstDifferenceIndex]) {
+					break;
+				}
+			}
+			let lastDifferenceIndexFromEnd;
+			for (lastDifferenceIndexFromEnd = 0; lastDifferenceIndexFromEnd < minLength; ++lastDifferenceIndexFromEnd) {
+				if (oldString[oldLength - 1 - lastDifferenceIndexFromEnd] !== newString[newLength - 1 - lastDifferenceIndexFromEnd]) {
+					break;
+				}
+			}
+
+			// If the string has changed in length, the selection must be at least as big as that change in length, up to the end of the changed string.
+			// If we don't do this, common letters between the end of the new string and the old string (eg: the ending 'e' in "Maybe we" and "Maybe")
+			// can give us an incorrect selection, and even an end-of-selection before our start-of-selection.
+			let lastDifferenceIndex = newLength - lastDifferenceIndexFromEnd;
+			{
+				const lengthDifference = maxLength - minLength;
+				lastDifferenceIndex = Math.min(newLength, Math.max(lastDifferenceIndex, firstDifferenceIndex + lengthDifference));
+			}
+
 			mutation.target.data = mutation.oldValue;
+			let nodeSelection = nodesAndOffsetsMutatedForSelection.get(mutation.target);
+			if (nodeSelection) {
+				nodeSelection.start = Math.min(nodeSelection.start, firstDifferenceIndex);
+				nodeSelection.end = Math.max(nodeSelection.end, lastDifferenceIndex);
+			} else {
+				nodesAndOffsetsMutatedForSelection.set(mutation.target, {start: firstDifferenceIndex, end: lastDifferenceIndex});
+			}
 		} else if (mutation.attributeName) {
 			if (mutation.attributeName === "class") {
 				wasSubstantial = true;
+				if (!nodesAndOffsetsMutatedForSelection.get(mutation.target)) {
+					nodesAndOffsetsMutatedForSelection.set(mutation.target, {start: 0, end: 0});
+				}
 			}
 			if (mutation.oldValue) {
 				mutation.target.setAttribute(mutation.attributeName, mutation.oldValue);
@@ -452,16 +638,13 @@ function getAndPrepCurrentUndoRedoState(putInRedo = false, isSubstantial = true)
 	if (putInRedo) {
 		// add to redo stack
 		if (needsNewRedo || redoStack.length === 0) {
-			const newRedo = {
-				mutations: new Array(),
-				selection: copyCurrentSelection()
-			};
+			const newRedo = new Array();
 			redoStack.push(newRedo);
 			needsNewRedo = false;
-			return newRedo.mutations;
+			return newRedo;
 		} else {
 			const topRedo = redoStack[redoStack.length - 1];
-			return topRedo.mutations;
+			return topRedo;
 		}
 	} else {
 		// clear redo stack
@@ -470,16 +653,13 @@ function getAndPrepCurrentUndoRedoState(putInRedo = false, isSubstantial = true)
 		}
 		// add to undo stack
 		if (needsNewUndo || undoStack.length === 0) {
-			const newUndo = {
-				mutations: new Array(),
-				selection: copyCurrentSelection()
-			};
+			const newUndo = new Array();
 			undoStack.push(newUndo);
 			needsNewUndo = false;
-			return newUndo.mutations;
+			return newUndo;
 		} else {
 			const topUndo = undoStack[undoStack.length - 1];
-			return topUndo.mutations;
+			return topUndo;
 		}
 	}
 }
@@ -698,9 +878,29 @@ function getOffsetInParentNode(inParent, inTarget, inOffset) {
 
 function findNodeAndOffset(inParent, inOffset) {
 	let offsetCounted = 0;
-	let childNode = inParent.firstChild;
+	let childNode = inParent;
 	let lastTextNode = null;
-	while (childNode && childNode != inParent) {
+	if (inOffset === Infinity) {
+		// special case -- we're looking for the end
+		while (childNode.lastChild) {
+			childNode = childNode.lastChild;
+		}
+		if (childNode.nodeType === Node.TEXT_NODE) {
+			lastTextNode = childNode;
+			const indexAtEnd = lastTextNode.data.length;
+			return {
+				leafNode: lastTextNode,
+				offset: indexAtEnd,
+				charAtOffset: indexAtEnd > 0 ? lastTextNode.data[indexAtEnd - 1] : null,
+				overshot: true
+			};
+		}
+		else {
+			childNode = inParent;
+		}
+	}
+
+	while (childNode) {
 		while (childNode.firstChild) {
 			childNode = childNode.firstChild;
 		}
@@ -1136,19 +1336,18 @@ function deleteSelectedContent() {
 
 function doUndo() {
 	if (undoStack.length > 0) {
-		updateSelection();
 		userDoc.dataset.undo = "undo";
 		clearParagraphHighlights();
+		nodesAndOffsetsMutatedForSelection.clear();
 		let latestUndo = undoStack.pop();
-		while (!undoMutations(latestUndo.mutations)) {
+		while (!undoMutations(latestUndo)) {
 			if (undoStack.length > 0) {
 				latestUndo = undoStack.pop();
 			} else {
 				break;
 			}
 		}
-		setCurrentSelection(latestUndo.selection);
-		restoreSelection();
+		setSelectionFromMutatedNodes();
 		delete userDoc.dataset.undo;
 		return true;
 	}
@@ -1157,21 +1356,19 @@ function doUndo() {
 
 function doRedo() {
 	if (redoStack.length > 0) {
-		updateSelection();
 		userDoc.dataset.redo = "redo";
 		clearParagraphHighlights();
-		updateSelection();
+		nodesAndOffsetsMutatedForSelection.clear();
 		getAndPrepCurrentUndoRedoState(false, false);
 		let latestRedo = redoStack.pop();
-		while (!undoMutations(latestRedo.mutations)) {
+		while (!undoMutations(latestRedo)) {
 			if (redoStack.length > 0) {
 				latestRedo = redoStack.pop();
 			} else {
 				break;
 			}
 		}
-		setCurrentSelection(latestRedo.selection);
-		restoreSelection();
+		setSelectionFromMutatedNodes();
 		delete userDoc.dataset.redo;
 		return true;
 	}
@@ -2712,11 +2909,6 @@ function inputOverrides(event) {
 				for (targetNode of selectedNodes()) {
 					targetNode.remove();
 				}
-				// no need to restore previous selection, because that's goooone now, but let's reflect new selection:
-				// TODO: Probably not actually needed. The problem is the empty text is what's selected after delete.
-				// Fix that and then this will probably work automatically due to selection change.
-				//updateSelection();
-				//addParagraphHighlights();
 			} else if (event.key === "Enter") { // Toggle Alternative Style A
 				event.preventDefault();
 				finishUndo();
@@ -2786,15 +2978,26 @@ function inputOverrides(event) {
 			}
 		} else if (event.key === "Backspace") {
 			const targetNode = updateSelection();
-			if (!isSelection() && targetNode && targetNode.classList && currentSelection.startOffset === 0) {
-				const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
-				if (currentNodeLevel > pLevel) {
-					event.preventDefault();
-					newInputType = inputEventPromote;
-					// promote by one
-					setListLevel(targetNode, currentNodeLevel - pLevel - 1);
-					matchContextListType(targetNode);
-					return;
+			if (!isSelection() && targetNode && targetNode.classList) {
+				let didBackspace = false;
+				if (getOffsetInParentNode(currentSelection.startElement, currentSelection.startNode, currentSelection.startOffset) === 0) {
+					const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
+					if (currentNodeLevel > pLevel) {
+						event.preventDefault();
+						finishUndo();
+						newInputType = inputEventPromote;
+						// promote by one
+						setListLevel(targetNode, currentNodeLevel - pLevel - 1);
+						matchContextListType(targetNode);
+						didBackspace = true;
+					}
+				}
+				if (!didBackspace) {
+					if (currentSelection.charBefore === "\u00A0" || currentSelection.charBefore === " ") {
+						finishUndo();
+					}
+					newInputType = inputEventBackspace;
+					didBackspace = true;
 				}
 			}
 		} else if (event.key === "Enter") { // Lots of special case stuff here
@@ -3298,14 +3501,15 @@ async function openFile() {
 	template.remove();
 	sanitizedTemplate.remove();
 	if (foundBadNodes) {
-		// That's fine, we can sanitize it, but don't want to make it easy to then overwrite this file.
-		// So prevent simple save and update title to reflect that this content was modified to be included.
-		currentFileHandle = null;
 		if (foundEditorBuildInNodes) {
+			currentFileHandle = fileHandle;
 			// Even if we weren't an EditorBuiltInSession, we've now attempted to open one, so consider this such a session to reduce risk of overwriting with a content file.
 			isEditorBuiltInSession = true;
-			document.title = "Imported content from " + fileName + editorTitleTail;
+			document.title = currentFileName + editorTitleTail;
 		} else {
+			// That's fine, we can sanitize it, but don't want to make it easy to then overwrite this file.
+			// So prevent simple save and update title to reflect that this content was modified to be included.
+			currentFileHandle = null;
 			// Definitely over-engineered this, but let's stick with it for now.
 			isEditorBuiltInSession = false;
 			document.title = "Imported content from " + fileName + titleTail;
