@@ -3506,19 +3506,22 @@ async function openFile() {
 	if (foundBadNodes) {
 		if (foundEditorBuiltInNodes) {
 			currentFileHandle = fileHandle;
+			currentFileName = fileName;
 			// Even if we weren't an EditorBuiltInSession, we've now attempted to open one, so consider this such a session to reduce risk of overwriting with a content file.
 			isEditorBuiltInSession = true;
-			document.title = currentFileName + editorTitleTail;
+			document.title = fileName + editorTitleTail;
 		} else {
 			// That's fine, we can sanitize it, but don't want to make it easy to then overwrite this file.
 			// So prevent simple save and update title to reflect that this content was modified to be included.
 			currentFileHandle = null;
+			currentFileName = "";
 			// Definitely over-engineered this, but let's stick with it for now.
 			isEditorBuiltInSession = false;
 			document.title = "Imported content from " + fileName + titleTail;
 		}
 	} else {
 		currentFileHandle = fileHandle;
+		currentFileName = fileName;
 		document.title = fileName + titleTail;
 		// Even if we were an EditorBuiltInSession, we've now explicitly opened a Content file, so we're not anymore:
 		isEditorBuiltInSession = false;
