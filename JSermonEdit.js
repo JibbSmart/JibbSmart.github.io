@@ -100,6 +100,7 @@ currentSelection.endElement = currentSelection.startNode;
 currentSelection.endOffset = 0;
 currentSelection.focusBeforeAnchor = false;
 currentSelection.charBefore = null;
+currentSelection.charAfter = null;
 
 function copyCurrentSelection() {
 	const newSelection = {};
@@ -111,6 +112,7 @@ function copyCurrentSelection() {
 	newSelection.endElement = currentSelection.endElement;
 	newSelection.endOffset = currentSelection.endOffset;
 	newSelection.charBefore = currentSelection.charBefore;
+	newSelection.charAfter = currentSelection.charAfter;
 	return newSelection;
 }
 
@@ -123,6 +125,7 @@ function setCurrentSelection(otherSelection) {
 	currentSelection.endElement = otherSelection.endElement;
 	currentSelection.endOffset = otherSelection.endOffset;
 	currentSelection.charBefore = otherSelection.charBefore;
+	currentSelection.charAfter = otherSelection.charAfter;
 }
 
 function isSelection() {
@@ -217,11 +220,17 @@ function updateSelection() {
 		currentSelection.endElement = endElement;
 		currentSelection.endOffset = endOffset;
 		currentSelection.charBefore = null;
+		currentSelection.charAfter = null;
 		if (currentSelection.isValid && currentSelection.startNode.nodeType === Node.TEXT_NODE) {
 			const startOffset = currentSelection.startOffset;
 			const textData = currentSelection.startNode.data;
-			if (startOffset <= textData.length && startOffset > 0) {
-				currentSelection.charBefore = textData[startOffset - 1];
+			if (startOffset <= textData.length) {
+				if (startOffset > 0) {
+					currentSelection.charBefore = textData[startOffset - 1];
+				}
+				if (startOffset < textData.length) {
+					currentSelection.charAfter = textData[startOffset];
+				}
 			}
 		}
 	} else {
@@ -234,6 +243,7 @@ function updateSelection() {
 		currentSelection.endOffset = 0;
 		currentSelection.focusBeforeAnchor = false;
 		currentSelection.charBefore = null;
+		currentSelection.charAfter = null;
 	}
 
 	return currentSelection.startElement;
@@ -857,6 +867,10 @@ function getOffsetInParentNode(inParent, inTarget, inOffset) {
 	let childNode = inParent;
 	while (childNode) {
 		while (childNode.firstChild) {
+			if (childNode === inTarget) {
+				offsetCounted += inOffset;
+				return offsetCounted;
+			}
 			childNode = childNode.firstChild;
 		}
 		if (childNode === inTarget) {
@@ -3000,6 +3014,13 @@ function inputOverrides(event) {
 					didBackspace = true;
 				}
 			}
+		} else if (event.key === "Delete") {
+			// Currently just letting this happen as usual, but need to track the input type for undo redo and word counting
+			updateSelection();
+			if (currentSelection.charAfter === "\u00A0" || currentSelection.charAfter === " ") {
+				finishUndo();
+			}
+			newInputType = inputEventDel;
 		} else if (event.key === "Enter") { // Lots of special case stuff here
 			const targetNode = updateSelection();
 			if (showingLevel < maxShowingLevel) { // Don't do anything when not showing paragraphs
@@ -3028,6 +3049,7 @@ function inputOverrides(event) {
 				}
 				let needsToClear = true;
 				if (!processedEnter) {
+					clearParagraphHighlights();
 					const isSelectionRange = isSelection();
 					event.preventDefault();
 					newInputType = inputEventEnter;
@@ -3081,6 +3103,7 @@ function inputOverrides(event) {
 					const newSelection = document.getSelection();
 					newSelection.removeAllRanges();
 					newSelection.addRange(newRange);
+					updateSelection();
 
 					countChildWords();
 				}
@@ -3092,8 +3115,8 @@ function inputOverrides(event) {
 		newInputType = inputEventMoveCaret;
 	}
 
-
-	if (newInputType !== inputEventNoCategory && newInputType !== previousInputType && newInputType !== inputEventUndoRedo) {
+	if (newInputType !== inputEventNoCategory && newInputType !== previousInputType &&
+		newInputType !== inputEventUndoRedo && newInputType !== inputEventMoveCaret) {
 		finishUndo();
 	} else {
 		if (newInputType === inputEventText) {
@@ -3121,14 +3144,14 @@ function keyRelease(inputEvent) {
 			break;
 	}
 
-	if (!event.altKey) {
+	if (!inputEvent.altKey) {
 		altPressed = false;
 	}
-	if (!event.shiftKey) {
+	if (!inputEvent.shiftKey) {
 		shiftPressed = false;
 	}
 
-	const altShiftEnding = (event.altKey && event.key === "Shift") || (event.shiftKey && event.key === "Alt");
+	const altShiftEnding = (inputEvent.altKey && inputEvent.key === "Shift") || (inputEvent.shiftKey && inputEvent.key === "Alt");
 	if (altShiftEnding) {
 		if (isSingleElementSelection() && currentSelection.startElement) {
 			let targetNode;
@@ -3251,12 +3274,17 @@ function selectionChange(event) {
 						}
 					}
 				}
-				if (currentInputType === inputEventNoCategory) {
-					finishUndo();
-				}
+				finishUndo();
 				break;
 			default:
 				break;
+		}
+
+		if (currentInputType !== inputEventNoCategory && currentInputType !== inputEventToggleAltA && currentInputType !== inputEventToggleAltB) {
+			if (previousSelectionStartElement !== previousSelectionEndElement) {
+				// Any special event that occurs while selecting multiple elements will change those elements, requiring a word recount
+				bigChange = true;
+			}
 		}
 		
 		let nodeForDelta = null;
