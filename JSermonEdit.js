@@ -337,6 +337,14 @@ function setSelectionFromMutatedNodes() {
 
 	if (earliestNode && latestNode) {
 		const newRange = document.createRange();
+		if (earliestOffset !== 0) {
+			// sanitize
+			earliestOffset = Math.min(earliestOffset, earliestNode.data.length);
+		}
+		if (latestOffset !== 0) {
+			// sanitize
+			latestOffset = Math.min(latestOffset, latestNode.data.length);
+		}
 		newRange.setStart(earliestNode, earliestOffset);
 		newRange.setEnd(latestNode, latestOffset);
 		const newSelection = document.getSelection();
@@ -464,7 +472,11 @@ function scrollToSelectedElementIfNeeded() {
 }
 
 const undoStack = new Array();
-const redoStack = new Array();
+const redoStackA = new Array();
+const redoStackB = new Array();
+let redoStack = redoStackA;
+let redoAnchor = null;
+let currentDoingMutation = null;
 
 const inputEventNoCategory = 0;
 const inputEventText = 1;
@@ -489,13 +501,20 @@ let doingRedo = false;
 let undoPaused = false;
 let needsNewUndo = true;
 let needsNewRedo = true;
+let undoId = 0;
 
 const nodeStatesRecordedForUndo = new Set();
 const nodesAndOffsetsMutatedForSelection = new Map();
 
+function queueNewUndo() {
+	undoId += 1;
+	userDoc.dataset.undoId = undoId;
+}
+
 function finishUndo() {
 	needsNewUndo = true;
 	needsNewRedo = true;
+	currentDoingMutation = null;
 	nodeStatesRecordedForUndo.clear();
 }
 
@@ -659,7 +678,7 @@ function getAndPrepCurrentUndoRedoState(putInRedo = false, isSubstantial = true)
 	} else {
 		// clear redo stack
 		if (!doingRedo && isSubstantial) {
-			redoStack.length = 0;
+			clearRedo();
 		}
 		// add to undo stack
 		if (needsNewUndo || undoStack.length === 0) {
@@ -683,31 +702,39 @@ const mutationCallback = (mutationList, observer) => {
 		// Get the info
 		if (!undoPaused && mutation.type === "childList") {
 			getAndPrepCurrentUndoRedoState(doingUndo).push(mutation);
+			if (currentInputType === inputEventText) {
+				currentDoingMutation = mutation;
+			}
 		} else if (mutation.type === "attributes") {
-			if (mutation.target === userDoc && mutation.attributeName === "data-undo") {
-				// This data attribute dictates writing changes to redo stack instead of undo stack
-				if (mutation.oldValue === "undo") {
-					doingUndo = false;
+			if (mutation.target === userDoc) {
+				if (mutation.attributeName === "data-undo") {
+					// This data attribute dictates writing changes to redo stack instead of undo stack
+					if (mutation.oldValue === "undo") {
+						doingUndo = false;
+						finishUndo();
+					} else {
+						doingUndo = true;
+						finishUndo();
+					}
+				} else if (mutation.attributeName === "data-redo") {
+					// This data attribute dictates whether redo stack gets cleared on new changes
+					if (mutation.oldValue === "redo") {
+						doingRedo = false;
+						finishUndo();
+					} else {
+						doingRedo = true;
+						finishUndo();
+					}
+				} else if (mutation.attributeName === "data-undo-paused") {
+					// This data attribute dictates whether undo/redo updates do anything at all
+					if (mutation.oldValue === "true") {
+						undoPaused = false;
+					} else {
+						undoPaused = true;
+					}
+				} else if (mutation.attributeName === "data-undo-id") {
+					// This data attribute is used to break up changes that might otherwise be combined
 					finishUndo();
-				} else {
-					doingUndo = true;
-					finishUndo();
-				}
-			} else if (mutation.target === userDoc && mutation.attributeName === "data-redo") {
-				// This data attribute dictates whether redo stack gets cleared on new changes
-				if (mutation.oldValue === "redo") {
-					doingRedo = false;
-					finishUndo();
-				} else {
-					doingRedo = true;
-					finishUndo();
-				}
-			} else if (mutation.target === userDoc && mutation.attributeName === "data-undo-paused") {
-				// This data attribute dictates whether undo/redo updates do anything at all
-				if (mutation.oldValue === "true") {
-					undoPaused = false;
-				} else {
-					undoPaused = true;
 				}
 			} else if (!undoPaused) {
 				if (mutation.attributeName === "data-selected" || mutation.attributeName === "data-selection-child") {
@@ -718,10 +745,36 @@ const mutationCallback = (mutationList, observer) => {
 				}
 			}
 		} else if (!undoPaused && mutation.type === "characterData") {
-			if (!nodeStatesRecordedForUndo.has(mutation.target)) {
-				getAndPrepCurrentUndoRedoState(doingUndo).push(mutation);
-				nodeStatesRecordedForUndo.add(mutation.target);
+			let canConsolidate = false;
+			if (!doingUndo && !doingRedo) {
+				if (currentDoingMutation && currentDoingMutation.target === mutation.target) {
+					const currentDoingMutationPreviousLength = currentDoingMutation.oldValue.length;
+					const mutationPreviousLength = mutation.oldValue.length;
+					const mutationDataLength = mutation.target.data.length;
+					if (mutationDataLength === mutationPreviousLength + 1) {
+						if (mutationPreviousLength > currentDoingMutationPreviousLength) {
+							// continuing to increase by 1
+							canConsolidate = true;
+						}
+					} else if (mutationDataLength === mutationPreviousLength - 1) {
+						if (mutationPreviousLength < currentDoingMutationPreviousLength) {
+							// continuing to decrease by 1
+							canConsolidate = true;
+						}
+					} else if (mutation.oldValue === mutation.target.data) {
+						// not even changing the content -- I don't know why it gets here
+						canConsolidate = true;
+					}
+				}
+				currentDoingMutation = mutation;
 			}
+			if (!canConsolidate) {
+				getAndPrepCurrentUndoRedoState(doingUndo).push(mutation);
+			}
+			// if (!nodeStatesRecordedForUndo.has(mutation.target)) {
+			// 	getAndPrepCurrentUndoRedoState(doingUndo).push(mutation);
+			// 	nodeStatesRecordedForUndo.add(mutation.target);
+			// }
 		}
 	}
 };
@@ -1387,6 +1440,14 @@ function doRedo() {
 		return true;
 	}
 	return false;
+}
+
+function doSuperRedo() {
+	// if (redoStack === redoStackA) {
+	// 	redoStack = redoStackB;
+	// } else {
+	// 	redoStack = redoStackA;
+	// }
 }
 
 function clearRedo() {
@@ -2825,14 +2886,14 @@ function inputOverrides(event) {
 			if (arrowUpPressed) { // Move Section Up
 				event.preventDefault();
 				if (isSingleElementSelection()) {
-					finishUndo();
+					queueNewUndo();
 					newInputType = inputEventMove;
 					moveUpSection();
 				}
 			} else if (arrowDownPressed) { // Move Section Down
 				event.preventDefault();
 				if (isSingleElementSelection()) {
-					finishUndo();
+					queueNewUndo();
 					newInputType = inputEventMove;
 					moveDownSection();
 				}
@@ -2852,7 +2913,7 @@ function inputOverrides(event) {
 				}
 			} else if (event.key === "Enter") { // Toggle Alternative Style B
 				event.preventDefault();
-				finishUndo();
+				queueNewUndo();
 				newInputType = inputEventToggleAltB;
 				updateSelection();
 				let targetNode;
@@ -2864,17 +2925,17 @@ function inputOverrides(event) {
 			// Move shortcuts
 			if (arrowUpPressed) { // Move Up
 				event.preventDefault();
-				finishUndo();
+				queueNewUndo();
 				newInputType = inputEventMove;
 				moveUpSimple();
 			} else if (arrowDownPressed) { // Move Down
 				event.preventDefault();
-				finishUndo();
+				queueNewUndo();
 				newInputType = inputEventMove;
 				moveDownSimple();
 			} else if (arrowLeftPressed) { // Promote/Adjust
 				event.preventDefault();
-				finishUndo();
+				queueNewUndo();
 				newInputType = inputEventPromote;
 				recountHandled = true;
 				updateSelection();
@@ -2886,7 +2947,7 @@ function inputOverrides(event) {
 				countChildWords();
 			} else if (arrowRightPressed) { // Demote/Adjust
 				event.preventDefault();
-				finishUndo();
+				queueNewUndo();
 				newInputType = inputEventPromote;
 				recountHandled = true;
 				updateSelection();
@@ -2899,7 +2960,7 @@ function inputOverrides(event) {
 			} else if (event.key === "h") { // Hide/Unhide
 				// work from end to beginning of selection, toggling hidden status
 				event.preventDefault();
-				finishUndo();
+				queueNewUndo();
 				newInputType = inputEventHide;
 				recountHandled = true;
 				updateSelection();
@@ -2915,7 +2976,7 @@ function inputOverrides(event) {
 				}
 			} else if (event.key === "Backspace") { // Remove
 				event.preventDefault();
-				finishUndo();
+				queueNewUndo();
 				newInputType = inputEventRemove;
 				updateSelection();
 				expandSelectionToIncludeHiddenChildren();
@@ -2925,7 +2986,7 @@ function inputOverrides(event) {
 				}
 			} else if (event.key === "Enter") { // Toggle Alternative Style A
 				event.preventDefault();
-				finishUndo();
+				queueNewUndo();
 				newInputType = inputEventToggleAltA;
 				updateSelection();
 				let targetNode;
@@ -2942,6 +3003,8 @@ function inputOverrides(event) {
 			} else if (event.key === "n") { // New session
 				event.preventDefault();
 				newSession();
+			} else if (event.key === "z") { // Super Redo to restore lost redos
+				doSuperRedo();
 			}
 		}
 	} else if (event.ctrlKey) {
@@ -2998,7 +3061,7 @@ function inputOverrides(event) {
 					const currentNodeLevel = getOrCalculateNodeLevel(targetNode);
 					if (currentNodeLevel > pLevel) {
 						event.preventDefault();
-						finishUndo();
+						queueNewUndo();
 						newInputType = inputEventPromote;
 						// promote by one
 						setListLevel(targetNode, currentNodeLevel - pLevel - 1);
@@ -3008,7 +3071,7 @@ function inputOverrides(event) {
 				}
 				if (!didBackspace) {
 					if (currentSelection.charBefore === "\u00A0" || currentSelection.charBefore === " ") {
-						finishUndo();
+						queueNewUndo();
 					}
 					newInputType = inputEventBackspace;
 					didBackspace = true;
@@ -3018,7 +3081,7 @@ function inputOverrides(event) {
 			// Currently just letting this happen as usual, but need to track the input type for undo redo and word counting
 			updateSelection();
 			if (currentSelection.charAfter === "\u00A0" || currentSelection.charAfter === " ") {
-				finishUndo();
+				queueNewUndo();
 			}
 			newInputType = inputEventDel;
 		} else if (event.key === "Enter") { // Lots of special case stuff here
@@ -3116,15 +3179,16 @@ function inputOverrides(event) {
 	}
 
 	if (newInputType !== inputEventNoCategory && newInputType !== previousInputType &&
-		newInputType !== inputEventUndoRedo && newInputType !== inputEventMoveCaret) {
-		finishUndo();
+		newInputType !== inputEventUndoRedo) { //&& newInputType !== inputEventMoveCaret) {
+		queueNewUndo();
 	} else {
 		if (newInputType === inputEventText) {
 			if (event.key === " ") {
-				finishUndo();
+				queueNewUndo();
 			}
 		}
 	}
+	previousInputType = currentInputType;
 	currentInputType = newInputType;
 }
 
@@ -3160,6 +3224,24 @@ function keyRelease(inputEvent) {
 			}
 		}
 	}
+}
+
+function mouseDown(mouseEvent) {
+	queueNewUndo();
+	previousInputType = currentInputType;
+	currentInputType = inputEventNoCategory;
+}
+
+function touchStart(touchEvent) {
+	queueNewUndo();
+	previousInputType = currentInputType;
+	currentInputType = inputEventNoCategory;
+}
+
+function loseFocus() {
+	queueNewUndo();
+	previousInputType = currentInputType;
+	currentInputType = inputEventNoCategory;
 }
 
 function clearParagraphHighlights() {
@@ -3222,6 +3304,8 @@ function selectionChange(event) {
 
 		countChildWords();
 		recountHandled = false;
+
+		queueNewUndo();
 	} else {
 		// has selected node changed?
 		const previousSelectionStartElement = currentSelection.startElement;
@@ -3274,7 +3358,6 @@ function selectionChange(event) {
 						}
 					}
 				}
-				finishUndo();
 				break;
 			default:
 				break;
@@ -3311,6 +3394,8 @@ function selectionChange(event) {
 		if (bigChange) {
 			// re-count all the children!
 			countChildWords();
+			previousInputType = currentInputType;
+			currentInputType = inputEventNoCategory;
 		} else if (nodeForDelta) {
 			updateParentNodeChildWords(nodeForDelta, nodeDelta);
 		}
@@ -3325,12 +3410,11 @@ function selectionChange(event) {
 	if (currentInputType > inputEventNoCategory && currentInputType < inputEventUndoRedo) {
 		scrollToSelectedElementIfNeeded();
 	}
-
-	previousInputType = currentInputType;
-	currentInputType = inputEventNoCategory;
 }
 
 function pasting(event) {
+	queueNewUndo();
+
 	isPasting = true;
 	nodePastingAfter = updateSelection();
 	if (nodePastingAfter) {
@@ -3402,6 +3486,8 @@ function load(event) {
 		document.title = titleNoFile;
 	}
 
+	undoStack.length = 0;
+	redoStack.length = 0;
 	startUndoRedoObserver();
 }
 
@@ -3570,6 +3656,10 @@ tableOfContents.addEventListener("keyup", keyRelease);
 userDoc.addEventListener("keydown", inputOverrides);
 userDoc.addEventListener("keyup", keyRelease);
 userDoc.addEventListener("paste", pasting);
+userDoc.addEventListener("mousedown", mouseDown);
+userDoc.addEventListener("touchstart", touchStart);
+userDoc.addEventListener("blur", loseFocus);
+
 
 document.addEventListener("selectionchange", selectionChange);
 document.addEventListener("visibilitychange", visibilityChange);
