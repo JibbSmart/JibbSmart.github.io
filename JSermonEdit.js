@@ -570,7 +570,7 @@ function undoMutations(mutationList) {
 					if (nodeSelection) {
 						nodeSelection.end = Math.max(nodeSelection.end, foundNodeForSelection.offset);
 					} else {
-						nodesAndOffsetsMutatedForSelection.set(startNodeForSelection.leafNode, {start: foundNodeForSelection.offset, end: foundNodeForSelection.offset});
+						nodesAndOffsetsMutatedForSelection.set(foundNodeForSelection.leafNode, {start: foundNodeForSelection.offset, end: foundNodeForSelection.offset});
 					}
 				}
 			} else if (nodeBeforeRemove) {
