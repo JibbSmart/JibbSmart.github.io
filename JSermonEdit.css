@@ -90,82 +90,74 @@ body {
 
 #userDoc [data-level="101"] {
 	margin-left: 30px;
-	counter-set: list_1 0 list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
+	counter-set: list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc [data-level="102"] {
 	margin-left: 50px;
-	counter-set: list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
+	counter-set: list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc [data-level="103"] {
 	margin-left: 70px;
-	counter-set: list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
+	counter-set: list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc [data-level="104"] {
 	margin-left: 90px;
-	counter-set: list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
+	counter-set: list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc [data-level="105"] {
 	margin-left: 110px;
-	counter-set: list_5 0 list_6 0 list_7 0 list_8 0;
+	counter-set: list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc [data-level="106"] {
 	margin-left: 130px;
-	counter-set: list_6 0 list_7 0 list_8 0;
+	counter-set: list_7 0 list_8 0;
 }
 
 #userDoc [data-level="107"] {
 	margin-left: 150px;
-	counter-set: list_7 0 list_8 0;
+	counter-set: list_8 0;
 }
 
 #userDoc [data-level="108"] {
 	margin-left: 170px;
-	counter-set: list_8 0;
+	counter-set: none;
 }
 
 #userDoc .altA[data-level="101"] {
 	counter-increment: list_1;
-	counter-set: list_2 0 list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc .altA[data-level="102"] {
 	counter-increment: list_2;
-	counter-set: list_3 0 list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc .altA[data-level="103"] {
 	counter-increment: list_3;
-	counter-set: list_4 0 list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc .altA[data-level="104"] {
 	counter-increment: list_4;
-	counter-set: list_5 0 list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc .altA[data-level="105"] {
 	counter-increment: list_5;
-	counter-set: list_6 0 list_7 0 list_8 0;
 }
 
 #userDoc .altA[data-level="106"] {
 	counter-increment: list_6;
-	counter-set: list_7 0 list_8 0;
 }
 
 #userDoc .altA[data-level="107"] {
 	counter-increment: list_7;
-	counter-set: list_8 0;
 }
 
 #userDoc .altA[data-level="108"] {
 	counter-increment: list_8;
-	counter-set: none;
 }
 
 #userDoc .altA[data-level="101"]::marker {
