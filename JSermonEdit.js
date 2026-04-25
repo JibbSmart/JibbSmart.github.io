@@ -73,13 +73,27 @@ const safeContentNodeTypes = new Set([
 let showingLevel = maxShowingLevel;
 
 let currentFileHandle = null;
-let currentFileName = "";
+let currentFileName = null;
+const lastSessionContentStorageKey = ".SermonEditLastSession";
+const sessionNameStorageKey = ".SermonEditLastFileName";
+const sessionContentPrefix = ".SermonEditFile";
 const savedWithEditorTitle = "Editor Included";
+let currentStorageKey = null;
+
 const titleNoFile = "JSermonEdit";
 const titleTail = " - " + titleNoFile;
 const editorTitleTail = " - " + savedWithEditorTitle;
 let isEditorBuiltInSession = false;
 let defaultContent = "";
+
+const enableCrossTabSync = true;
+const prefixCrossTabUpdate = ".SermonEditCrossTabUpdate";
+const prefixCrossTabRequest = ".SermonEditCrossTabRequest";
+let crossTabUpdateBroadcastChannel = null;
+let crossTabRequestBroadcastChannel = null;
+let hasCrossTabFocus = false;
+let lastUpdatedMutationNumber = -1;
+let mutationCounter = 0;
 
 let caretViewportX = -1;
 let caretViewportY = -1;
@@ -356,6 +370,129 @@ function setSelectionFromMutatedNodes() {
 	updateCaretViewportPosition();
 	scrollToSelectedElementIfNeeded();
 }
+
+// Syncing
+
+function sendCrossTabUpdate() {
+	if (enableCrossTabSync && crossTabUpdateBroadcastChannel) {
+		// Tell everyone who cares to know what our content is
+		clearParagraphHighlights();
+		crossTabUpdateBroadcastChannel.postMessage(userDoc.innerHTML);
+		addParagraphHighlights();
+		lastUpdatedMutationNumber = mutationCounter;
+	}
+}
+
+function sendCrossTabUpdateIfFocused() {
+	if (hasCrossTabFocus) {
+		sendCrossTabUpdate();
+	}
+}
+
+function claimCrossTabFocus() {
+	if (enableCrossTabSync && crossTabRequestBroadcastChannel) {
+		// Let everyone else know we're claiming focus
+		crossTabRequestBroadcastChannel.postMessage({ IsClaimingFocus: true });
+		hasCrossTabFocus = true;
+	}
+}
+
+function claimCrossTabFocusIfNeeded() {
+	if (!hasCrossTabFocus) {
+		// Let everyone else know we're claiming focus
+		claimCrossTabFocus();
+	}
+}
+
+function otherClaimedCrossTabFocus() {
+	if (enableCrossTabSync) {
+		const hadCrossTabFocus = hasCrossTabFocus;
+		hasCrossTabFocus = false; // Update right away before sending any messages
+		if (hadCrossTabFocus) {
+			// If we had cross tab focus, update with our state
+			sendCrossTabUpdate();
+		}
+	}
+}
+
+function requestCrossTabUpdate() {
+	if (enableCrossTabSync && crossTabRequestBroadcastChannel) {
+		// Request an update from the current focused tab (if it exists)
+		crossTabRequestBroadcastChannel.postMessage({ IsRequestingUpdate: true });
+	}
+}
+
+function requestCrossTabUpdateIfNeeded() {
+	if (enableCrossTabSync && crossTabRequestBroadcastChannel) {
+		// Request an update from the current focused tab (if it exists)
+		crossTabRequestBroadcastChannel.postMessage({ IsRequestingUpdate: true, OnlyIfChanged: true });
+	}
+}
+
+function otherRequestedCrossTabUpdate(onlyIfChanged) {
+	if (enableCrossTabSync && hasCrossTabFocus) {
+		// Someone else requested an update, so update if needed
+		if (!onlyIfChanged || mutationCounter !== lastUpdatedMutationNumber) {
+			sendCrossTabUpdateIfFocused();
+		}
+	}
+}
+
+function otherMadeCrossTabRequest(event) {
+	if (event.data.IsClaimingFocus) {
+		otherClaimedCrossTabFocus();
+	}
+	if (event.data.IsRequestingUpdate) {
+		otherRequestedCrossTabUpdate(event.data.OnlyIfChanged);
+	}
+}
+
+function otherSentCrossTabUpdate(event) {
+	if (enableCrossTabSync) {
+		// Receive content from another tab
+		userDoc.innerHTML = event.data;
+		addParagraphHighlights();
+		lastUpdatedMutationNumber = mutationCounter;
+	}
+}
+
+function storageKeyFromFileName(fileName) {
+	return fileName ? sessionContentPrefix + "." + fileName : null;
+}
+
+function setStorageKeyAndUpdateChannelsIfNeeded(storageKey) {
+	if (currentStorageKey === storageKey) {
+		// No changes needed!
+		return;
+	}
+	currentStorageKey = storageKey;
+
+	if (crossTabUpdateBroadcastChannel) {
+		crossTabUpdateBroadcastChannel.close();
+		crossTabUpdateBroadcastChannel = null;
+	}
+	if (crossTabRequestBroadcastChannel) {
+		crossTabRequestBroadcastChannel.close();
+		crossTabRequestBroadcastChannel = null;
+	}
+
+	if (currentStorageKey && enableCrossTabSync) {
+		hasCrossTabFocus = document.hasFocus();
+
+		crossTabUpdateBroadcastChannel = new BroadcastChannel(prefixCrossTabUpdate + currentStorageKey);
+		crossTabRequestBroadcastChannel = new BroadcastChannel(prefixCrossTabRequest + currentStorageKey);
+
+		crossTabUpdateBroadcastChannel.onmessage = otherSentCrossTabUpdate;
+		crossTabRequestBroadcastChannel.onmessage = otherMadeCrossTabRequest;
+
+		requestCrossTabUpdate();
+		if (hasCrossTabFocus) {
+			claimCrossTabFocus();
+		}
+	}
+}
+
+// Undo/Redo
 
 function pauseUndoUpdates() {
 	userDoc.dataset.undoPaused = "true";
@@ -696,6 +833,7 @@ function getAndPrepCurrentUndoRedoState(putInRedo = false, isSubstantial = true)
 // Events on changes for undo/redo
 const mutationCallback = (mutationList, observer) => {
 	// Do any needed processing here
+	++mutationCounter;
 
 	// Create undo/redo events as needed
 	for (const mutation of mutationList) {
@@ -3429,7 +3567,8 @@ function newSession() {
 
 	userDoc.innerHTML = defaultContent;
 	isEditorBuiltInSession = false;
-	currentFileName = "";
+	currentFileName = null;
+	setStorageKeyAndUpdateChannelsIfNeeded(null);
 	document.title = titleNoFile;
 	currentFileHandle = null;
 	undoStack.length = 0;
@@ -3439,10 +3578,17 @@ function newSession() {
 }
 
 function saveSession() {
-	clearParagraphHighlights();
-	const sessionKey = currentFileName ? currentFileName : "lastSession";
-	localStorage.setItem(sessionKey, userDoc.innerHTML);
-	addParagraphHighlights();
+	if (enableCrossTabSync && !hasCrossTabFocus) {
+		// If we have cross tab syncing enabled, we don't want out-of-date sessions saved
+		return;
+	}
+	if (currentStorageKey) {
+		clearParagraphHighlights();
+		// This way we can distinguish between sessions working on different files
+		localStorage.setItem(sessionNameStorageKey, currentStorageKey);
+		localStorage.setItem(currentStorageKey, userDoc.innerHTML);
+		addParagraphHighlights();
+	}
 }
 
 function loadSession() {
@@ -3453,19 +3599,44 @@ function loadSession() {
 		allowLastSessionFallback = false;
 	}
 	if (currentFileName) {
-		const lastSession = localStorage.getItem(currentFileName);
+		let storageKey = storageKeyFromFileName(currentFileName);
+		const lastSession = localStorage.getItem(storageKey);
 		if (lastSession) {
 			userDoc.innerHTML = lastSession;
+			// Do it after loading content in case we're going to receive an update from an open session
+			setStorageKeyAndUpdateChannelsIfNeeded(storageKey);
 			return true;
 		}
-	}
-	if (allowLastSessionFallback) {
-		const lastSession = localStorage.getItem("lastSession");
+	} else if (allowLastSessionFallback) {
+		let lastSession;
+		let storageKey = localStorage.getItem(sessionNameStorageKey);
+		if (storageKey) {
+			lastSession = localStorage.getItem(storageKey);
+			currentFileName = null;
+		} else {
+			storageKey = sessionNameStorageKey;
+			currentFileName = null;
+			lastSession = localStorage.getItem(lastSessionContentStorageKey);
+		}
 		if (lastSession) {
 			userDoc.innerHTML = lastSession;
+			setStorageKeyAndUpdateChannelsIfNeeded(storageKey);
 			return true;
 		}
+		// fallback to old value
+		lastSession = localStorage.getItem("lastSession");
+		if (lastSession) {
+			userDoc.innerHTML = lastSession;
+			currentFileName = null;
+			setStorageKeyAndUpdateChannelsIfNeeded(lastSessionContentStorageKey);
+			return true;
+		} else {
+			setStorageKeyAndUpdateChannelsIfNeeded(null);
+		}
+	} else {
+		setStorageKeyAndUpdateChannelsIfNeeded(null);
 	}
+
 	return false;
 }
 
@@ -3557,6 +3728,8 @@ async function saveFile(fileContent, isSimpleSave, saveDescription) {
 	if (isSimpleSave || !currentFileHandle) {
 		// Simple / normal or Save As / Export when there's no base save updates the document Title to show THIS is the file we are working on
 		currentFileHandle = fileHandle;
+		currentFileName = fileName;
+		setStorageKeyAndUpdateChannelsIfNeeded(storageKeyFromFileName(currentFileName));
 		if (fileName) {
 			if (isEditorBuiltInSession) {
 				document.title = fileName + editorTitleTail;
@@ -3621,6 +3794,7 @@ async function openFile() {
 		if (foundEditorBuiltInNodes) {
 			currentFileHandle = fileHandle;
 			currentFileName = fileName;
+			setStorageKeyAndUpdateChannelsIfNeeded(storageKeyFromFileName(currentFileName));
 			// Even if we weren't an EditorBuiltInSession, we've now attempted to open one, so consider this such a session to reduce risk of overwriting with a content file.
 			isEditorBuiltInSession = true;
 			document.title = fileName + editorTitleTail;
@@ -3628,7 +3802,8 @@ async function openFile() {
 			// That's fine, we can sanitize it, but don't want to make it easy to then overwrite this file.
 			// So prevent simple save and update title to reflect that this content was modified to be included.
 			currentFileHandle = null;
-			currentFileName = "";
+			currentFileName = null;
+			setStorageKeyAndUpdateChannelsIfNeeded(null);
 			// Definitely over-engineered this, but let's stick with it for now.
 			isEditorBuiltInSession = false;
 			document.title = "Imported content from " + fileName + titleTail;
@@ -3636,6 +3811,7 @@ async function openFile() {
 	} else {
 		currentFileHandle = fileHandle;
 		currentFileName = fileName;
+		setStorageKeyAndUpdateChannelsIfNeeded(storageKeyFromFileName(currentFileName));
 		document.title = fileName + titleTail;
 		// Even if we were an EditorBuiltInSession, we've now explicitly opened a Content file, so we're not anymore:
 		isEditorBuiltInSession = false;
@@ -3648,6 +3824,15 @@ async function openFile() {
 function onScroll(event) {
 	caretViewportX = -1;
 	caretViewportY = -1;
+
+	// Scroll can happen without focus, so make sure we're in sync
+	if (!hasCrossTabFocus) {
+		setTimeout(requestCrossTabUpdateIfNeeded, 250);
+	}
+}
+
+function onWindowFocus() {
+	claimCrossTabFocusIfNeeded();
 }
 
 tableOfContents.addEventListener("keydown", inputOverrides);
@@ -3660,9 +3845,9 @@ userDoc.addEventListener("mousedown", mouseDown);
 userDoc.addEventListener("touchstart", touchStart);
 userDoc.addEventListener("blur", loseFocus);
 
-
 document.addEventListener("selectionchange", selectionChange);
 document.addEventListener("visibilitychange", visibilityChange);
+document.addEventListener("scroll", onScroll);
 
 window.addEventListener("load", load);
-window.addEventListener("scroll", onScroll);
+window.addEventListener("focus", onWindowFocus);
