@@ -3832,7 +3832,7 @@ function onScroll(event) {
 }
 
 function onWindowFocus() {
-	claimCrossTabFocusIfNeeded();
+	claimCrossTabFocus();
 }
 
 tableOfContents.addEventListener("keydown", inputOverrides);
