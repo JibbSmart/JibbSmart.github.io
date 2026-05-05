@@ -116,6 +116,8 @@ currentSelection.focusBeforeAnchor = false;
 currentSelection.charBefore = null;
 currentSelection.charAfter = null;
 
+let selectionCanvasContext;
+
 function copyCurrentSelection() {
 	const newSelection = {};
 	newSelection.isValid = currentSelection.isValid;
@@ -376,9 +378,7 @@ function setSelectionFromMutatedNodes() {
 function sendCrossTabUpdate() {
 	if (enableCrossTabSync && crossTabUpdateBroadcastChannel) {
 		// Tell everyone who cares to know what our content is
-		clearParagraphHighlights();
 		crossTabUpdateBroadcastChannel.postMessage(userDoc.innerHTML);
-		addParagraphHighlights();
 		lastUpdatedMutationNumber = mutationCounter;
 	}
 }
@@ -451,8 +451,8 @@ function otherSentCrossTabUpdate(event) {
 	if (enableCrossTabSync) {
 		// Receive content from another tab
 		userDoc.innerHTML = event.data;
-		addParagraphHighlights();
 		lastUpdatedMutationNumber = mutationCounter;
+		requestRefreshSelectionOverlay();
 	}
 }
 
@@ -550,6 +550,7 @@ function scrollToMaintainCaretViewportPosition() {
 			left: diffX,
 			behavior: "instant",
 		});
+
 		caretViewportX = -1;
 		caretViewportY = -1;
 	}
@@ -1542,7 +1543,6 @@ function deleteSelectedContent() {
 function doUndo() {
 	if (undoStack.length > 0) {
 		userDoc.dataset.undo = "undo";
-		clearParagraphHighlights();
 		nodesAndOffsetsMutatedForSelection.clear();
 		let latestUndo = undoStack.pop();
 		while (!undoMutations(latestUndo)) {
@@ -1562,7 +1562,6 @@ function doUndo() {
 function doRedo() {
 	if (redoStack.length > 0) {
 		userDoc.dataset.redo = "redo";
-		clearParagraphHighlights();
 		nodesAndOffsetsMutatedForSelection.clear();
 		getAndPrepCurrentUndoRedoState(false, false);
 		let latestRedo = redoStack.pop();
@@ -2259,9 +2258,6 @@ function sanitizeNodes(startNode, numNodes) {
 				targetNode.removeAttribute("style");
 				setNodeWordCount(targetNode, targetNodeWords);
 			}
-			if (targetNode.classList) {
-				delete targetNode.dataset.selected;
-			}
 		}
 
 		targetNode = nextNode;
@@ -2452,6 +2448,7 @@ function doToggleAltA(targetNode) {
 		if (currentNodeLevel >= pLevel) { // Currently only have AltA configured for non-headings
 			targetNode.classList.toggle("altA");
 		}
+		requestRefreshSelectionOverlay();
 	}
 }
 
@@ -2461,6 +2458,7 @@ function doToggleAltB(targetNode) {
 		if (currentNodeLevel >= pLevel) { // Currently only have AltB configured for non-headings
 			targetNode.classList.toggle("altB");
 		}
+		requestRefreshSelectionOverlay();
 	}
 }
 
@@ -2716,7 +2714,6 @@ function increaseShowingLevel() {
 	// now we need to change the selection to something shown
 	let newSelectedElement = null;
 	if (currentSelection.startElement && getOrCalculateNodeLevel(currentSelection.startElement) > showingLevel) {
-		clearParagraphHighlights();
 		const previousVisibleSibling = previousVisibleOrderableSiblingOfLevelOrHigher(currentSelection.startElement, showingLevel).sibling;
 		if (previousVisibleSibling) {
 			// select end
@@ -2770,14 +2767,16 @@ function increaseShowingLevel() {
 		}
 		// we've done all we can. Now:
 		restoreSelection(true);
-		addParagraphHighlights();
 	}
+	requestRefreshSelectionOverlay();
 
 	return result;
 }
 
 function decreaseShowingLevel() {
-	return setShowingLevel(Math.min(showingLevel + 1, maxShowingLevel));
+	const result = setShowingLevel(Math.min(showingLevel + 1, maxShowingLevel));
+	requestRefreshSelectionOverlay();
+	return result;
 }
 
 function setShowingLevel(inLevel) {
@@ -3010,12 +3009,7 @@ function inputOverrides(event) {
 	const altShiftBeginning = (event.altKey && event.key === "Shift") || (event.shiftKey && event.key === "Alt");
 	if (altShiftBeginning) {
 		updateSelection();
-		if (isSingleElementSelection() && currentSelection.startElement) {
-			let targetNode;
-			for (targetNode of childElementsOf(currentSelection.startElement)) {
-				targetNode.dataset.selectionChild = "true";
-			}
-		}
+		requestRefreshSelectionOverlay();
 	}
 
 	if (event.altKey) {
@@ -3134,7 +3128,7 @@ function inputOverrides(event) {
 			} else if (event.key === "s") { // Export to "other" format (if already "with editor", save just the content; if already just content, save "with editor")
 				event.preventDefault();
 				if (isEditorBuiltInSession) { // Export just content
-					saveWithoutHighlights(true);
+					saveContent(true);
 				} else { // Export with editor
 					saveWithEditor(true);
 				}
@@ -3159,14 +3153,14 @@ function inputOverrides(event) {
 			if (isEditorBuiltInSession) { // If this editor is built into the doc, we don't want to risk over-writing with a "content-only" file, so force it to save with editor
 				saveWithEditor(false);
 			} else {
-				saveWithoutHighlights(false); // Otherwise, this just saves the content in the doc for opening from the editor
+				saveContent(false); // Otherwise, this just saves the content in the doc for opening from the editor
 			}
 		} else if (event.key === "S") { // Save As
 			event.preventDefault();
 			if (isEditorBuiltInSession) {
 				saveWithEditor(true);
 			} else {
-				saveWithoutHighlights(true);
+				saveContent(true);
 			}
 		} else if (event.key === "o") { // Open content file
 			event.preventDefault();
@@ -3250,7 +3244,6 @@ function inputOverrides(event) {
 				}
 				let needsToClear = true;
 				if (!processedEnter) {
-					clearParagraphHighlights();
 					const isSelectionRange = isSelection();
 					event.preventDefault();
 					newInputType = inputEventEnter;
@@ -3355,58 +3348,115 @@ function keyRelease(inputEvent) {
 
 	const altShiftEnding = (inputEvent.altKey && inputEvent.key === "Shift") || (inputEvent.shiftKey && inputEvent.key === "Alt");
 	if (altShiftEnding) {
-		if (isSingleElementSelection() && currentSelection.startElement) {
-			let targetNode;
-			for (targetNode of childElementsOf(currentSelection.startElement)) {
-				delete targetNode.dataset.selectionChild;
-			}
-		}
+		requestRefreshSelectionOverlay();
+	}
+}
+
+function queueNewUndoIfHasCombinableInput() {
+	if (currentInputType === inputEventText ||
+			currentInputType === inputEventBackspace ||
+			currentInputType === inputEventDel) {
+		queueNewUndo();
+		previousInputType = currentInputType;
+		currentInputType = inputEventNoCategory;
 	}
 }
 
 function mouseDown(mouseEvent) {
-	queueNewUndo();
-	previousInputType = currentInputType;
-	currentInputType = inputEventNoCategory;
+	queueNewUndoIfHasCombinableInput();
 }
 
 function touchStart(touchEvent) {
-	queueNewUndo();
-	previousInputType = currentInputType;
-	currentInputType = inputEventNoCategory;
+	queueNewUndoIfHasCombinableInput();
 }
 
 function loseFocus() {
-	queueNewUndo();
-	previousInputType = currentInputType;
-	currentInputType = inputEventNoCategory;
+	queueNewUndoIfHasCombinableInput();
 }
 
-function clearParagraphHighlights() {
-	let numNodesCleared = 0;
+function getNumSelectedElements() {
+	let numSelected = 0;
 	let currentNode;
 	for (currentNode of selectedElements()) {
-		delete currentNode.dataset.selected;
-		numNodesCleared++;
+		numSelected++;
 	}
-	if (isSingleElementSelection() && currentSelection.startElement) {
-		for (targetNode of childElementsOf(currentSelection.startElement)) {
-			delete targetNode.dataset.selectionChild;
+	return numSelected;
+}
+
+function snappedRectForElementHighlightIfInBounds(inLeftEdge, inElement) {
+	const elementRect = inElement.getBoundingClientRect();
+	const roundedTop = Math.round(elementRect.y);
+	const roundedHeight = Math.round(elementRect.y + elementRect.height) - roundedTop;
+	// Check vertical bounds
+	if (elementRect.y < selectionCanvasContext.canvas.height && elementRect.y + elementRect.height > 0) {
+		// Adjust for bullet points and checks
+		let roundedWidth = Math.round(elementRect.x - inLeftEdge);
+		const inElementLevel = getNodeLevel(inElement);
+		if (inElementLevel && inElementLevel > pLevel) {
+			// Adjust for bullet point
+			roundedWidth -= 20;
+			if (inElement.classList.contains("altB")) {
+				roundedWidth -= 5;
+				if (inElement.classList.contains("altA")) {
+					roundedWidth -= 10;
+				}
+			}
 		}
+		selectionCanvasContext.rect(inLeftEdge, roundedTop, roundedWidth, roundedHeight);
 	}
-	return numNodesCleared;
 }
 
-function addParagraphHighlights() {
-	let currentNode;
-	for (currentNode of selectedElements()) {
-		currentNode.dataset.selected = "true";
+function refreshSelectionOverlay(dummyTimeStamp) {
+	if (!selectionCanvasContext) {
+		const selectionCanvas = document.createElement("canvas");
+		selectionCanvas.id = "overlayCanvas";
+      selectionCanvas.style.position = "fixed";
+      selectionCanvas.style.top = 0;
+      selectionCanvas.style.left = 0;
+      document.body.appendChild(selectionCanvas);
+		selectionCanvas.style.pointerEvents = "none";
+      selectionCanvas.style.width = "100%";
+      selectionCanvas.style.height = "100%";
+      selectionCanvas.style.zIndex = 10;
+      selectionCanvasContext = selectionCanvas.getContext("2d");
+      selectionCanvasContext.canvas.width = window.innerWidth;
+      selectionCanvasContext.canvas.height = window.innerHeight;
+
+		window.onresize = (event) => {
+			selectionCanvasContext.canvas.width = window.innerWidth;
+  			selectionCanvasContext.canvas.height = window.innerHeight;
+			refreshSelectionOverlay();
+		};
 	}
+
+	const docRect = userDoc.getBoundingClientRect();
+	const docLeftRounded = Math.round(docRect.x) + 2;
+
+	const canvasWidth = selectionCanvasContext.canvas.width;
+	const canvasHeight = selectionCanvasContext.canvas.height;
+	selectionCanvasContext.clearRect(0, 0, canvasWidth, canvasHeight);
+
+	let currentNode;
+	selectionCanvasContext.fillStyle = "#33AAEE";
+	selectionCanvasContext.globalAlpha = 0.85;
+	selectionCanvasContext.beginPath();
+	for (currentNode of selectedElements()) {
+		snappedRectForElementHighlightIfInBounds(docLeftRounded, currentNode);
+	}
+	selectionCanvasContext.fill();
 	if (isSingleElementSelection() && shiftPressed && altPressed && currentSelection.startElement) {
+		selectionCanvasContext.globalAlpha = 0.25;
+		selectionCanvasContext.beginPath();
 		for (targetNode of childElementsOf(currentSelection.startElement)) {
-			targetNode.dataset.selectionChild = "true";
+			snappedRectForElementHighlightIfInBounds(docLeftRounded, targetNode);
 		}
+		selectionCanvasContext.fill();
 	}
+	selectionCanvasContext.globalAlpha = 1.0;
+}
+
+function requestRefreshSelectionOverlay() {
+	requestAnimationFrame(refreshSelectionOverlay);
 }
 
 function selectionChange(event) {
@@ -3435,9 +3485,6 @@ function selectionChange(event) {
 
 			// update current selection
 			updateSelection();
-
-			// apply relevant selected style
-			addParagraphHighlights();
 		}
 
 		countChildWords();
@@ -3455,9 +3502,6 @@ function selectionChange(event) {
 		const wasRange = currentSelection.startOffset !== currentSelection.endOffset ||
 			currentSelection.startNode !== currentSelection.endNode &&
 			currentSelection.startElement !== currentSelection.endElement;
-
-		// clear current highlights
-		clearParagraphHighlights();
 
 		// compare with previous selection
 		updateSelection();
@@ -3539,15 +3583,14 @@ function selectionChange(event) {
 		}
 
 		recountHandled = false;
-
-		// apply relevant selected style
-		addParagraphHighlights();
 	}
 
 	// For most selection change events, we want to move to keep it in view:
 	if (currentInputType > inputEventNoCategory && currentInputType < inputEventUndoRedo) {
 		scrollToSelectedElementIfNeeded();
 	}
+
+	requestRefreshSelectionOverlay();
 }
 
 function pasting(event) {
@@ -3559,7 +3602,7 @@ function pasting(event) {
 		nodePastingAfter = nodePastingAfter.previousSibling;
 	}
 	numNodesBeforePaste = userDoc.childNodes.length;
-	numNodesPastingInto = clearParagraphHighlights();
+	numNodesPastingInto = getNumSelectedElements();
 }
 
 function newSession() {
@@ -3583,11 +3626,9 @@ function saveSession() {
 		return;
 	}
 	if (currentStorageKey) {
-		clearParagraphHighlights();
 		// This way we can distinguish between sessions working on different files
 		localStorage.setItem(sessionNameStorageKey, currentStorageKey);
 		localStorage.setItem(currentStorageKey, userDoc.innerHTML);
-		addParagraphHighlights();
 	}
 }
 
@@ -3666,18 +3707,14 @@ function saveWithEditor(forceSaveAs) {
 	if (!currentFileHandle) {
 		isEditorBuiltInSession = true;
 	}
-	clearParagraphHighlights();
 	const currentTitle = document.title;
 	document.title = savedWithEditorTitle; // This lets us know on OPEN not to override with latest session data unless it's associated with this file specifically
 	saveFile("<!DOCTYPE html>" + "\n" + document.documentElement.outerHTML, !forceSaveAs, "Editor with Content as HTML");
 	document.title = currentTitle;
-	addParagraphHighlights();
 }
 
-function saveWithoutHighlights(forceSaveAs) {
-	clearParagraphHighlights();
+function saveContent(forceSaveAs) {
 	saveFile(userDoc.innerHTML, !forceSaveAs, "User Content as HTML");
-	addParagraphHighlights();
 }
 
 async function saveFile(fileContent, isSimpleSave, saveDescription) {
@@ -3829,10 +3866,17 @@ function onScroll(event) {
 	if (!hasCrossTabFocus) {
 		setTimeout(requestCrossTabUpdateIfNeeded, 250);
 	}
+
+	requestRefreshSelectionOverlay();
+}
+
+function onScrollEnd(event) {
+	refreshSelectionOverlay();
 }
 
 function onWindowFocus() {
 	claimCrossTabFocus();
+	refreshSelectionOverlay();
 }
 
 tableOfContents.addEventListener("keydown", inputOverrides);
@@ -3848,6 +3892,7 @@ userDoc.addEventListener("blur", loseFocus);
 document.addEventListener("selectionchange", selectionChange);
 document.addEventListener("visibilitychange", visibilityChange);
 document.addEventListener("scroll", onScroll);
+document.addEventListener("scrollend", onScrollEnd);
 
 window.addEventListener("load", load);
 window.addEventListener("focus", onWindowFocus);
