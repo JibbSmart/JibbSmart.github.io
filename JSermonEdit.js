@@ -3618,6 +3618,7 @@ function newSession() {
 	redoStack.length = 0;
 
 	startUndoRedoObserver();
+	requestRefreshSelectionOverlay();
 }
 
 function saveSession() {
@@ -3854,6 +3855,7 @@ async function openFile() {
 		isEditorBuiltInSession = false;
 	}
 
+	requestRefreshSelectionOverlay();
 	undoStack.length = 0;
 	redoStack.length = 0;
 }
