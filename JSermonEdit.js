@@ -70,6 +70,9 @@ const safeContentNodeTypes = new Set([
 	"BR"
 ]);
 
+const enableCrossTabSync = false;
+const enableAutoSaveNamedFiles = false;
+
 let showingLevel = maxShowingLevel;
 
 let currentFileHandle = null;
@@ -86,7 +89,6 @@ const editorTitleTail = " - " + savedWithEditorTitle;
 let isEditorBuiltInSession = false;
 let defaultContent = "";
 
-const enableCrossTabSync = true;
 const prefixCrossTabUpdate = ".SermonEditCrossTabUpdate";
 const prefixCrossTabRequest = ".SermonEditCrossTabRequest";
 let crossTabUpdateBroadcastChannel = null;
@@ -452,7 +454,7 @@ function otherSentCrossTabUpdate(event) {
 		// Receive content from another tab
 		userDoc.innerHTML = event.data;
 		lastUpdatedMutationNumber = mutationCounter;
-		requestRefreshSelectionOverlay();
+		requestUpdateSelectionAndRefreshOverlay();
 	}
 }
 
@@ -2448,7 +2450,7 @@ function doToggleAltA(targetNode) {
 		if (currentNodeLevel >= pLevel) { // Currently only have AltA configured for non-headings
 			targetNode.classList.toggle("altA");
 		}
-		requestRefreshSelectionOverlay();
+		requestUpdateSelectionAndRefreshOverlay();
 	}
 }
 
@@ -2458,7 +2460,7 @@ function doToggleAltB(targetNode) {
 		if (currentNodeLevel >= pLevel) { // Currently only have AltB configured for non-headings
 			targetNode.classList.toggle("altB");
 		}
-		requestRefreshSelectionOverlay();
+		requestUpdateSelectionAndRefreshOverlay();
 	}
 }
 
@@ -3455,6 +3457,15 @@ function refreshSelectionOverlay(dummyTimeStamp) {
 	selectionCanvasContext.globalAlpha = 1.0;
 }
 
+function updateSelectionAndRefreshOverlay() {
+	updateSelection();
+	refreshSelectionOverlay();
+}
+
+function requestUpdateSelectionAndRefreshOverlay() {
+	requestAnimationFrame(updateSelectionAndRefreshOverlay);
+}
+
 function requestRefreshSelectionOverlay() {
 	requestAnimationFrame(refreshSelectionOverlay);
 }
@@ -3590,7 +3601,7 @@ function selectionChange(event) {
 		scrollToSelectedElementIfNeeded();
 	}
 
-	requestRefreshSelectionOverlay();
+	requestUpdateSelectionAndRefreshOverlay();
 }
 
 function pasting(event) {
@@ -3618,7 +3629,7 @@ function newSession() {
 	redoStack.length = 0;
 
 	startUndoRedoObserver();
-	requestRefreshSelectionOverlay();
+	requestUpdateSelectionAndRefreshOverlay();
 }
 
 function saveSession() {
@@ -3626,10 +3637,14 @@ function saveSession() {
 		// If we have cross tab syncing enabled, we don't want out-of-date sessions saved
 		return;
 	}
-	if (currentStorageKey) {
-		// This way we can distinguish between sessions working on different files
-		localStorage.setItem(sessionNameStorageKey, currentStorageKey);
-		localStorage.setItem(currentStorageKey, userDoc.innerHTML);
+	if (enableAutoSaveNamedFiles) {
+		if (currentStorageKey) {
+			// This way we can distinguish between sessions working on different files
+			localStorage.setItem(sessionNameStorageKey, currentStorageKey);
+			localStorage.setItem(currentStorageKey, userDoc.innerHTML);
+		}
+	} else if (!currentFileName) {
+		localStorage.setItem("lastSession", userDoc.innerHTML);
 	}
 }
 
@@ -3641,29 +3656,33 @@ function loadSession() {
 		allowLastSessionFallback = false;
 	}
 	if (currentFileName) {
-		let storageKey = storageKeyFromFileName(currentFileName);
-		const lastSession = localStorage.getItem(storageKey);
-		if (lastSession) {
-			userDoc.innerHTML = lastSession;
-			// Do it after loading content in case we're going to receive an update from an open session
-			setStorageKeyAndUpdateChannelsIfNeeded(storageKey);
-			return true;
+		if (enableAutoSaveNamedFiles) {
+			let storageKey = storageKeyFromFileName(currentFileName);
+			const lastSession = localStorage.getItem(storageKey);
+			if (lastSession) {
+				userDoc.innerHTML = lastSession;
+				// Do it after loading content in case we're going to receive an update from an open session
+				setStorageKeyAndUpdateChannelsIfNeeded(storageKey);
+				return true;
+			}
 		}
 	} else if (allowLastSessionFallback) {
 		let lastSession;
-		let storageKey = localStorage.getItem(sessionNameStorageKey);
-		if (storageKey) {
-			lastSession = localStorage.getItem(storageKey);
-			currentFileName = null;
-		} else {
-			storageKey = sessionNameStorageKey;
-			currentFileName = null;
-			lastSession = localStorage.getItem(lastSessionContentStorageKey);
-		}
-		if (lastSession) {
-			userDoc.innerHTML = lastSession;
-			setStorageKeyAndUpdateChannelsIfNeeded(storageKey);
-			return true;
+		if (enableAutoSaveNamedFiles) {
+			let storageKey = localStorage.getItem(sessionNameStorageKey);
+			if (storageKey) {
+				lastSession = localStorage.getItem(storageKey);
+				currentFileName = null;
+			} else {
+				storageKey = sessionNameStorageKey;
+				currentFileName = null;
+				lastSession = localStorage.getItem(lastSessionContentStorageKey);
+			}
+			if (lastSession) {
+				userDoc.innerHTML = lastSession;
+				setStorageKeyAndUpdateChannelsIfNeeded(storageKey);
+				return true;
+			}
 		}
 		// fallback to old value
 		lastSession = localStorage.getItem("lastSession");
@@ -3855,7 +3874,7 @@ async function openFile() {
 		isEditorBuiltInSession = false;
 	}
 
-	requestRefreshSelectionOverlay();
+	requestUpdateSelectionAndRefreshOverlay();
 	undoStack.length = 0;
 	redoStack.length = 0;
 }
